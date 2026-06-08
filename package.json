@@ -1,0 +1,46 @@
+{
+  "name": "cognitrader-bsc",
+  "version": "1.0.0",
+  "description": "CogniTrader BSC — Multi-Signal AI Trading Agent on BNB Chain for BNB Hack 2026",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "agent": "bash run-agent.sh"
+  },
+  "keywords": [
+    "bnb-chain",
+    "bsc",
+    "trading-agent",
+    "ai-trading",
+    "cognitrader",
+    "pancakeswap",
+    "coinmarketcap",
+    "trust-wallet",
+    "defi"
+  ],
+  "author": "CogniTrader Team",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "winston": "^3.13.0",
+    "bignumber.js": "^9.1.0",
+    "technicalindicators": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "tsx": "^4.16.0",
+    "eslint": "^9.5.0",
+    "@typescript-eslint/eslint-plugin": "^7.14.0",
+    "@typescript-eslint/parser": "^7.14.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  cognitrader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cognitrader-bsc
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./agent-memory.json:/app/agent-memory.json
+    environment:
+      - NODE_ENV=production
+      - AGENT_LOG_LEVEL=info
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bsc-network
+
+  # Optional: Run alongside a monitoring dashboard
+  # Uncomment if you have a monitoring service
+  # monitor:
+  #   image: grafana/grafana:latest
+  #   container_name: cognitrader-monitor
+  #   ports:
+  #     - "3001:3000"
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #   networks:
+  #     - bsc-network
+
+networks:
+  bsc-network:
+    driver: bridge

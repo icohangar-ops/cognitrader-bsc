@@ -1,0 +1,17 @@
+{
+  "agent": {
+    "pollingIntervalMs": 30000,
+    "maxConcurrentPositions": 3,
+    "maxPositionPct": 0.10,
+    "stopLossPct": 0.05,
+    "takeProfitPct": 0.15,
+    "dailyDrawdownLimitPct": 0.10,
+    "minSignalScore": 65,
+    "minConfidence": 0.6,
+    "slippageBps": 50,
+    "dryRun": true,
+    "strategies": ["MOMENTUM", "SENTIMENT", "MEAN_REVERSION"],
+    "tokens": ["CAKE", "ETH", "ADA", "SOL", "AVAX"],
+    "logLevel": "info"
+  }
+}
