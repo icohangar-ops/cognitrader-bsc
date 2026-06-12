@@ -224,7 +224,7 @@ export class MeanReversionStrategy {
   async generateSignal(
     token: string,
     candles: Candle[],
-    quote?: CMCQuote,
+    _quote?: CMCQuote,
     fearGreed?: FearGreedIndex,
   ): Promise<Signal> {
     getLogger().debug(`[MeanReversion] Analyzing ${token} with ${candles.length} candles`);
@@ -259,7 +259,6 @@ export class MeanReversionStrategy {
     const reversionBullish = bbScore.score > 15 || zScoreResult.score > 15;
     const reversionBearish = bbScore.score < 8 || zScoreResult.score < 8;
     const wickBullish = wickResult.score > 12;
-    const stable = volResult.score > 12;
 
     const bullishSignals = [reversionBullish, wickBullish].filter(Boolean).length;
     const bearishSignals = [reversionBearish].filter(Boolean).length;

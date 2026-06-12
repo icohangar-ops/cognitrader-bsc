@@ -9,12 +9,10 @@ import { getLogger } from '../utils/logger';
 
 export class CoinMarketCapClient {
   private client: AxiosInstance;
-  private baseUrl: string;
   private lastRequestTime = 0;
   private rateLimitMs: number;
 
   constructor(apiKey: string, baseUrl: string = 'https://pro-api.coinmarketcap.com', rateLimitMs: number = 5000) {
-    this.baseUrl = baseUrl;
     this.rateLimitMs = rateLimitMs;
 
     this.client = axios.create({

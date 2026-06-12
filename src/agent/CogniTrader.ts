@@ -5,13 +5,10 @@
 
 import type {
   FullConfig,
-  AgentConfig,
   AgentMetrics,
   AgentStatus,
   PortfolioState,
-  MarketSnapshot,
   TradeResult,
-  AggregatedSignal,
   Position,
 } from '../utils/types';
 import { CoinMarketCapClient } from '../integrations/cmc';

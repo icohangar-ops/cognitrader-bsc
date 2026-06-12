@@ -4,7 +4,17 @@
 // scoring, and generates actionable trade signals
 // ============================================================
 
-import type { Signal, AggregatedSignal, MarketSnapshot, Candle, StrategyType, AgentConfig } from '../utils/types';
+import type {
+  Signal,
+  AggregatedSignal,
+  MarketSnapshot,
+  Candle,
+  StrategyType,
+  AgentConfig,
+  CMCQuote,
+  FearGreedIndex,
+  CMCTrendingToken,
+} from '../utils/types';
 import { MomentumStrategy } from '../strategies/MomentumStrategy';
 import { SentimentStrategy } from '../strategies/SentimentStrategy';
 import { MeanReversionStrategy } from '../strategies/MeanReversion';
@@ -115,9 +125,9 @@ export class SignalEngine {
     strategy: StrategyType,
     token: string,
     candles: Candle[],
-    quote: Signal['metadata'] extends Record<string, infer V> ? never : never,
-    fearGreed: Signal['metadata'] extends Record<string, infer V> ? never : never,
-    trending: Signal['metadata'] extends Record<string, infer V> ? never : never,
+    quote: CMCQuote | undefined,
+    fearGreed: FearGreedIndex,
+    trending: CMCTrendingToken[],
   ): Promise<Signal | null> {
     switch (strategy) {
       case 'MOMENTUM':
@@ -171,7 +181,7 @@ export class SignalEngine {
     return candles;
   }
 
-  private generateSyntheticCandles(token: string, count: number): Candle[] {
+  private generateSyntheticCandles(_token: string, count: number): Candle[] {
     // Generate realistic synthetic candles for strategy computation
     // In production, use CMC historical data API
     const candles: Candle[] = [];

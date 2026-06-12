@@ -163,7 +163,7 @@ export class SentimentStrategy {
 
   async generateSignal(
     token: string,
-    candles: Candle[],
+    _candles: Candle[],
     quote: CMCQuote,
     fearGreed: FearGreedIndex,
     trending: CMCTrendingToken[],

@@ -6,7 +6,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import path from 'path';
 import type { TWAKConfig, TradeResult, BSCConfig } from '../utils/types';
 import { getLogger } from '../utils/logger';
 

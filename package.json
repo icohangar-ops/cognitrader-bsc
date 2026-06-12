@@ -37,8 +37,8 @@
     "typescript": "^5.5.0",
     "tsx": "^4.16.0",
     "eslint": "^9.5.0",
-    "@typescript-eslint/eslint-plugin": "^7.14.0",
-    "@typescript-eslint/parser": "^7.14.0"
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -74,7 +74,7 @@ export interface Signal {
   confidence: number; // 0–1 confidence interval
   reasoning: string;
   timestamp: number;
-  metadata: Record<string, number | string>;
+  metadata: Record<string, number | string | boolean>;
 }
 
 export interface AggregatedSignal {
@@ -110,6 +110,7 @@ export interface RiskAssessment {
   riskRewardRatio: number;
   reasons: string[];
   warnings: string[];
+  riskScore?: number; // 0–100 (higher = riskier), carried from the originating signal
 }
 
 export interface PortfolioState {

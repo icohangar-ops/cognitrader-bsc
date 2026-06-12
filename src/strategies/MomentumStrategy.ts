@@ -8,18 +8,6 @@ import { getLogger } from '../utils/logger';
 
 // ─── Technical Indicator Helpers ─────────────────────────────
 
-function calculateSMA(candles: Candle[], period: number): number[] {
-  const result: number[] = [];
-  for (let i = period - 1; i < candles.length; i++) {
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      sum += candles[j].close;
-    }
-    result.push(sum / period);
-  }
-  return result;
-}
-
 function calculateEMA(values: number[], period: number): number[] {
   if (values.length === 0) return [];
   const result: number[] = [values[0]];
@@ -202,7 +190,7 @@ export class MomentumStrategy {
   async generateSignal(
     token: string,
     candles: Candle[],
-    quote?: CMCQuote,
+    _quote?: CMCQuote,
     fearGreed?: FearGreedIndex,
   ): Promise<Signal> {
     getLogger().debug(`[Momentum] Analyzing ${token} with ${candles.length} candles`);

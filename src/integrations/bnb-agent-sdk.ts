@@ -99,7 +99,7 @@ export class BNBAgentSDK {
       tool: 'check_risk',
       success: true,
       data: {
-        riskLevel: args.score > 80 ? 'HIGH' : args.score > 60 ? 'MEDIUM' : 'LOW',
+        riskLevel: (args.score as number) > 80 ? 'HIGH' : (args.score as number) > 60 ? 'MEDIUM' : 'LOW',
         allowed: (args.score as number) >= this.config.minSignalScore,
         maxPosition: this.config.maxPositionPct * 100,
       },

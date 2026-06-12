@@ -46,7 +46,7 @@ export class BSCClient {
   private provider: JsonRpcProvider;
   private wallet: Wallet;
   private router: ethers.Contract;
-  private isReady = false;
+  private ready = false;
 
   constructor(config: BSCConfig) {
     this.config = config;
@@ -73,7 +73,7 @@ export class BSCClient {
       getLogger().info(`💰 Wallet: ${this.wallet.address}`);
       getLogger().info(`💰 Balance: ${ethers.formatEther(balance)} BNB`);
 
-      this.isReady = true;
+      this.ready = true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       getLogger().error(`Failed to connect to BSC: ${msg}`);
@@ -280,7 +280,7 @@ export class BSCClient {
   }
 
   isReady(): boolean {
-    return this.isReady;
+    return this.ready;
   }
 
   private errorResult(token: string, error: string): TradeResult {

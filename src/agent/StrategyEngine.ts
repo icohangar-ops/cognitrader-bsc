@@ -10,9 +10,6 @@ import type {
   TradeResult,
   PortfolioState,
   Position,
-  Signal,
-  RiskAssessment,
-  Candle,
 } from '../utils/types';
 import { BSCClient } from '../integrations/bsc';
 import { TrustWalletAgentKit } from '../integrations/twak';
@@ -278,7 +275,7 @@ export class StrategyEngine {
 
   // ─── Position Management ──────────────────────────────────
 
-  private async checkExistingPositions(): Promise<void> {
+  async checkExistingPositions(): Promise<void> {
     for (const [token, position] of this.positions) {
       // Update current price
       try {

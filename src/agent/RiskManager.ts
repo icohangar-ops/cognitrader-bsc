@@ -87,7 +87,7 @@ export class RiskManager {
       warnings.push(`Currently in daily loss: ${(portfolio.dailyPnLPct * 100).toFixed(2)}%`);
     }
 
-    if (decision.riskAssessment.riskScore > 70) {
+    if ((decision.riskAssessment.riskScore ?? 0) > 70) {
       warnings.push(`High risk score: ${decision.riskAssessment.riskScore}/100`);
       logRiskWarning(`High risk trade: ${decision.token} (score: ${decision.riskAssessment.riskScore})`);
     }
