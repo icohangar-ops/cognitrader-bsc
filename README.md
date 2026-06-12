@@ -222,7 +222,7 @@ An additional layer via Trust Wallet Agent Kit:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Cubiczan/cognitrader-bsc.git
+git clone https://github.com/icohangar-ops/cognitrader-bsc.git
 cd cognitrader-bsc
 
 # Install dependencies
