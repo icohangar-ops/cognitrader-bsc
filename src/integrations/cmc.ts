@@ -3,9 +3,10 @@
 // Fetches market data, Fear & Greed index, trending tokens
 // ============================================================
 
-import axios, { type AxiosInstance } from 'axios';
+import axios, { type AxiosInstance, type AxiosResponse, type AxiosRequestConfig } from 'axios';
 import type { CMCQuote, CMCTrendingToken, FearGreedIndex, MarketSnapshot, OHLCVSeries, Candle } from '../utils/types';
 import { getLogger } from '../utils/logger';
+import { ioRetry } from '../lib/resilience';
 
 export class CoinMarketCapClient {
   private client: AxiosInstance;
@@ -35,6 +36,38 @@ export class CoinMarketCapClient {
     );
   }
 
+  // ─── Resilient GET (retry 3x w/ 1s/2s/4s backoff) ──────────
+  //
+  // Wraps every outbound CMC request in retry-with-exponential-backoff.
+  // The response interceptor rejects with `Error("CMC API [<status>]: ...")`;
+  // we parse that status so client errors (4xx, except 429) fail fast and only
+  // transient failures (429, 5xx, network/timeout) are retried.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async getWithRetry<T = any>(
+    url: string,
+    config?: AxiosRequestConfig,
+  ): Promise<AxiosResponse<T>> {
+    return ioRetry<AxiosResponse<T>>(() => this.client.get<T>(url, config), {
+      label: `CMC GET ${url}`,
+      shouldRetry: (error) => {
+        const status = CoinMarketCapClient.statusFromError(error);
+        if (status === undefined) return true; // network / timeout — retry
+        if (status === 429) return true; // rate limited — back off and retry
+        return status >= 500; // 5xx transient; 4xx (auth/bad request) fail fast
+      },
+      onRetry: ({ attempt, delayMs, error }) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        getLogger().warn(`CMC request retry ${attempt} after ${delayMs}ms: ${msg}`);
+      },
+    });
+  }
+
+  private static statusFromError(error: unknown): number | undefined {
+    const msg = error instanceof Error ? error.message : String(error);
+    const match = msg.match(/CMC API \[(\d{3})\]/);
+    return match ? parseInt(match[1], 10) : undefined;
+  }
+
   // ─── Rate Limiting ─────────────────────────────────────────
 
   private async enforceRateLimit(): Promise<void> {
@@ -56,7 +89,7 @@ export class CoinMarketCapClient {
     const symbolStr = symbols.join(',');
     getLogger().debug(`Fetching CMC quotes for: ${symbolStr}`);
 
-    const response = await this.client.get('/v2/cryptocurrency/quotes/latest', {
+    const response = await this.getWithRetry('/v2/cryptocurrency/quotes/latest', {
       params: { symbol: symbolStr, convert: 'USD' },
     });
 
@@ -78,7 +111,7 @@ export class CoinMarketCapClient {
 
     getLogger().debug('Fetching CMC Fear & Greed Index');
 
-    const response = await this.client.get('/v2/fear-and-greed/index');
+    const response = await this.getWithRetry('/v2/fear-and-greed/index');
 
     const data = response.data.data;
     const fgi: FearGreedIndex = {
@@ -99,7 +132,7 @@ export class CoinMarketCapClient {
 
     getLogger().debug('Fetching CMC trending tokens');
 
-    const response = await this.client.get('/v2/cryptocurrency/trending');
+    const response = await this.getWithRetry('/v2/cryptocurrency/trending');
 
     const trending: CMCTrendingToken[] = response.data.data.map((item: Record<string, unknown>) => ({
       id: item.id as number,
@@ -124,7 +157,7 @@ export class CoinMarketCapClient {
 
     getLogger().debug(`Fetching OHLCV for ${symbol}: ${interval} x ${count}`);
 
-    const response = await this.client.get('/v2/cryptocurrency/ohlcv/historical', {
+    const response = await this.getWithRetry('/v2/cryptocurrency/ohlcv/historical', {
       params: { symbol, convert: 'USD', time_start: this.getTimeStart(interval, count) },
     });
 

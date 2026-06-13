@@ -23,8 +23,14 @@ function loadBSCConfig(): BSCConfig {
     throw new Error('BSC_RPC_URL environment variable is required');
   }
 
+  const rpcFallbackUrls = (process.env.BSC_RPC_FALLBACK_URLS ?? '')
+    .split(',')
+    .map((u) => u.trim())
+    .filter((u) => u.length > 0);
+
   return {
     rpcUrl,
+    rpcFallbackUrls,
     chainId: parseInt(process.env.BSC_CHAIN_ID ?? '56', 10),
     walletAddress: requiredEnv('BSC_WALLET_ADDRESS'),
     privateKey: requiredEnv('BSC_PRIVATE_KEY'),

@@ -155,6 +155,8 @@ export interface TradeResult {
 
 export interface BSCConfig {
   rpcUrl: string;
+  /** Optional backup RPC endpoints (rotated to on failure). */
+  rpcFallbackUrls: string[];
   chainId: number;
   walletAddress: string;
   privateKey: string;

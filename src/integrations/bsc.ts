@@ -6,6 +6,7 @@
 import { ethers, type JsonRpcProvider, type Wallet } from 'ethers';
 import type { BSCConfig, TradeResult, TokenPair } from '../utils/types';
 import { getLogger } from '../utils/logger';
+import { ioRetry } from '../lib/resilience';
 
 // PancakeSwap V2 Router ABI (minimal — swapExactTokensForTokens)
 const PANCAKE_ROUTER_ABI = [
@@ -45,19 +46,63 @@ export class BSCClient {
   private config: BSCConfig;
   private provider: JsonRpcProvider;
   private wallet: Wallet;
-  private router: ethers.Contract;
   private ready = false;
+
+  // ─── RPC endpoint pool (primary + BSC_RPC_FALLBACK_URLS) ────
+  // Distinct provider/wallet/router triples, one per endpoint. The retry loop
+  // rotates through these on failure so a single unhealthy node does not stall
+  // the agent.
+  private readonly rpcUrls: string[];
+  private readonly providers: JsonRpcProvider[];
+  private readonly wallets: Wallet[];
+  private readonly routers: ethers.Contract[];
 
   constructor(config: BSCConfig) {
     this.config = config;
 
-    this.provider = new ethers.JsonRpcProvider(config.rpcUrl, {
-      chainId: config.chainId,
-      name: 'bsc',
-    });
+    this.rpcUrls = [config.rpcUrl, ...(config.rpcFallbackUrls ?? [])];
+    this.providers = this.rpcUrls.map(
+      (url) => new ethers.JsonRpcProvider(url, { chainId: config.chainId, name: 'bsc' }),
+    );
+    this.wallets = this.providers.map((p) => new ethers.Wallet(config.privateKey, p));
+    this.routers = this.wallets.map(
+      (w) => new ethers.Contract(config.pancakeSwapRouter, PANCAKE_ROUTER_ABI, w),
+    );
 
-    this.wallet = new ethers.Wallet(config.privateKey, this.provider);
-    this.router = new ethers.Contract(config.pancakeSwapRouter, PANCAKE_ROUTER_ABI, this.wallet);
+    // Primary endpoint stays the default for any direct accessor (getProvider, etc.).
+    this.provider = this.providers[0];
+    this.wallet = this.wallets[0];
+  }
+
+  // ─── Resilient RPC call w/ failover ─────────────────────────
+  // Retries (3 attempts, 1s/2s/4s backoff) and rotates to the next RPC
+  // endpoint on each retry. `fn` receives the provider/wallet/router triple
+  // bound to the endpoint selected for that attempt.
+  private async rpcCall<T>(
+    label: string,
+    fn: (ctx: { provider: JsonRpcProvider; wallet: Wallet; router: ethers.Contract }) => Promise<T>,
+  ): Promise<T> {
+    const count = this.providers.length;
+    return ioRetry<T>(
+      (attempt) => {
+        const idx = (attempt - 1) % count;
+        return fn({
+          provider: this.providers[idx],
+          wallet: this.wallets[idx],
+          router: this.routers[idx],
+        });
+      },
+      {
+        label,
+        onRetry: ({ attempt, delayMs, error }) => {
+          const nextIdx = attempt % count;
+          const msg = error instanceof Error ? error.message : String(error);
+          getLogger().warn(
+            `BSC RPC ${label} retry ${attempt} after ${delayMs}ms (rotating to ${this.rpcUrls[nextIdx]}): ${msg}`,
+          );
+        },
+      },
+    );
   }
 
   // ─── Initialization ───────────────────────────────────────
@@ -66,8 +111,10 @@ export class BSCClient {
     getLogger().info('⛓ Connecting to BSC network...');
 
     try {
-      const network = await this.provider.getNetwork();
-      const balance = await this.provider.getBalance(this.wallet.address);
+      const { network, balance } = await this.rpcCall('initialize', async ({ provider, wallet }) => ({
+        network: await provider.getNetwork(),
+        balance: await provider.getBalance(wallet.address),
+      }));
 
       getLogger().info(`✅ BSC connected — Chain: ${network.name} (${network.chainId})`);
       getLogger().info(`💰 Wallet: ${this.wallet.address}`);
@@ -84,15 +131,19 @@ export class BSCClient {
   // ─── Balance Queries ──────────────────────────────────────
 
   async getBNBBalance(): Promise<number> {
-    const balance = await this.provider.getBalance(this.wallet.address);
+    const balance = await this.rpcCall('getBNBBalance', ({ provider, wallet }) =>
+      provider.getBalance(wallet.address),
+    );
     return parseFloat(ethers.formatEther(balance));
   }
 
   async getTokenBalance(tokenAddress: string): Promise<number> {
-    const token = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
-    const balance = await token.balanceOf(this.wallet.address);
-    const decimals = await token.decimals();
-    return parseFloat(ethers.formatUnits(balance, decimals));
+    return this.rpcCall('getTokenBalance', async ({ provider, wallet }) => {
+      const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      const balance = await token.balanceOf(wallet.address);
+      const decimals = await token.decimals();
+      return parseFloat(ethers.formatUnits(balance, decimals));
+    });
   }
 
   // ─── Price Queries ─────────────────────────────────────────
@@ -108,7 +159,9 @@ export class BSCClient {
       const wbnb = this.config.wbnbAddress;
       const amountIn = ethers.parseEther('1');
       const path = [wbnb, token.address];
-      const amounts = await this.router.getAmountsOut(amountIn, path);
+      const amounts = await this.rpcCall(`getPriceBNB:${tokenSymbol}`, ({ router }) =>
+        router.getAmountsOut(amountIn, path),
+      );
       const amountOut = amounts[1];
       const decimals = token.decimals;
       return parseFloat(ethers.formatUnits(amountOut, decimals));
@@ -144,17 +197,23 @@ export class BSCClient {
       const wbnb = this.config.wbnbAddress;
       const path = [wbnb, token.address];
 
-      // Get expected output
-      const amountsOut = await this.router.getAmountsOut(amountIn, path);
+      // Get expected output (idempotent read — safe to retry / fail over)
+      const amountsOut = await this.rpcCall('swapBNBForToken:getAmountsOut', ({ router }) =>
+        router.getAmountsOut(amountIn, path),
+      );
       const expectedOut = amountsOut[amountsOut.length - 1];
       const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
 
-      // Execute swap
+      // Execute swap. Only the broadcast is retried/failed-over: it returns
+      // before the tx is mined, and a retry only happens when the node rejects
+      // the broadcast (no tx hash yet), so there is no double-submit risk.
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min deadline
-      const tx = await this.router.swapExactETHForTokens(minAmountOut, path, this.wallet.address, deadline, {
-        value: amountIn,
-        gasLimit: 300_000n,
-      });
+      const tx = await this.rpcCall('swapBNBForToken:broadcast', ({ router, wallet }) =>
+        router.swapExactETHForTokens(minAmountOut, path, wallet.address, deadline, {
+          value: amountIn,
+          gasLimit: 300_000n,
+        }),
+      );
 
       const receipt = await tx.wait();
       if (!receipt) {
@@ -205,27 +264,33 @@ export class BSCClient {
     }
 
     try {
-      const tokenContract = new ethers.Contract(token.address, ERC20_ABI, this.wallet);
       const decimals = token.decimals;
       const amountIn = ethers.parseUnits(amountTokens.toString(), decimals);
       const wbnb = this.config.wbnbAddress;
       const path = [token.address, wbnb];
 
-      // Approve router
+      // Approve router (broadcast retried/failed-over before tx hash exists)
       getLogger().debug(`Approving PancakeSwap router for ${tokenSymbol}...`);
-      const approveTx = await tokenContract.approve(this.config.pancakeSwapRouter, amountIn);
+      const approveTx = await this.rpcCall('swapTokenForBNB:approve', ({ wallet }) => {
+        const tokenContract = new ethers.Contract(token.address, ERC20_ABI, wallet);
+        return tokenContract.approve(this.config.pancakeSwapRouter, amountIn);
+      });
       await approveTx.wait();
 
-      // Get expected output
-      const amountsOut = await this.router.getAmountsOut(amountIn, path);
+      // Get expected output (idempotent read — safe to retry / fail over)
+      const amountsOut = await this.rpcCall('swapTokenForBNB:getAmountsOut', ({ router }) =>
+        router.getAmountsOut(amountIn, path),
+      );
       const expectedOut = amountsOut[amountsOut.length - 1];
       const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
 
-      // Execute swap
+      // Execute swap (only the broadcast is retried — see swapBNBForToken note)
       const deadline = Math.floor(Date.now() / 1000) + 300;
-      const tx = await this.router.swapExactTokensForETH(amountIn, minAmountOut, path, this.wallet.address, deadline, {
-        gasLimit: 300_000n,
-      });
+      const tx = await this.rpcCall('swapTokenForBNB:broadcast', ({ router, wallet }) =>
+        router.swapExactTokensForETH(amountIn, minAmountOut, path, wallet.address, deadline, {
+          gasLimit: 300_000n,
+        }),
+      );
 
       const receipt = await tx.wait();
       if (!receipt) {
@@ -256,7 +321,7 @@ export class BSCClient {
   // ─── Gas Price Estimation ──────────────────────────────────
 
   async estimateGasPrice(): Promise<number> {
-    const feeData = await this.provider.getFeeData();
+    const feeData = await this.rpcCall('estimateGasPrice', ({ provider }) => provider.getFeeData());
     const gasPrice = feeData.gasPrice;
     return gasPrice ? parseFloat(ethers.formatUnits(gasPrice, 'gwei')) : 3; // default 3 gwei on BSC
   }

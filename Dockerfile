@@ -3,11 +3,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json tsconfig.json ./
+# Copy package files (include the lockfile so `npm ci` can enforce it)
+COPY package.json package-lock.json tsconfig.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies from the lockfile (reproducible, no drift)
+RUN npm ci
 
 # Copy source
 COPY src/ ./src/
