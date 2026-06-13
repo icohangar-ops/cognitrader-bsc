@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
     "agent": "bash run-agent.sh"
   },
   "keywords": [

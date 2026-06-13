@@ -7,6 +7,7 @@ import { ethers, type JsonRpcProvider, type Wallet } from 'ethers';
 import type { BSCConfig, TradeResult, TokenPair } from '../utils/types';
 import { getLogger } from '../utils/logger';
 import { ioRetry } from '../lib/resilience';
+import { computeMinOut } from './slippage';
 
 // PancakeSwap V2 Router ABI (minimal — swapExactTokensForTokens)
 const PANCAKE_ROUTER_ABI = [
@@ -202,7 +203,7 @@ export class BSCClient {
         router.getAmountsOut(amountIn, path),
       );
       const expectedOut = amountsOut[amountsOut.length - 1];
-      const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
+      const minAmountOut = computeMinOut(expectedOut, slippageBps);
 
       // Execute swap. Only the broadcast is retried/failed-over: it returns
       // before the tx is mined, and a retry only happens when the node rejects
@@ -282,7 +283,7 @@ export class BSCClient {
         router.getAmountsOut(amountIn, path),
       );
       const expectedOut = amountsOut[amountsOut.length - 1];
-      const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
+      const minAmountOut = computeMinOut(expectedOut, slippageBps);
 
       // Execute swap (only the broadcast is retried — see swapBNBForToken note)
       const deadline = Math.floor(Date.now() / 1000) + 300;
