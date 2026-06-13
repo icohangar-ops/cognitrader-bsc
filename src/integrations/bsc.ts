@@ -147,7 +147,7 @@ export class BSCClient {
       // Get expected output
       const amountsOut = await this.router.getAmountsOut(amountIn, path);
       const expectedOut = amountsOut[amountsOut.length - 1];
-      const minAmountOut = expectedOut * BigInt(Math.floor((10000 - slippageBps)));
+      const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
 
       // Execute swap
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min deadline
@@ -219,7 +219,7 @@ export class BSCClient {
       // Get expected output
       const amountsOut = await this.router.getAmountsOut(amountIn, path);
       const expectedOut = amountsOut[amountsOut.length - 1];
-      const minAmountOut = expectedOut * BigInt(Math.floor((10000 - slippageBps)));
+      const minAmountOut = expectedOut * BigInt(10000 - slippageBps) / 10000n;
 
       // Execute swap
       const deadline = Math.floor(Date.now() / 1000) + 300;

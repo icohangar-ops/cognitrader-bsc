@@ -295,13 +295,22 @@ export class StrategyEngine {
       const evaluation = this.riskManager.evaluatePositionExit(position);
       if (evaluation.shouldExit) {
         getLogger().info(`🛑 Exiting ${token}: ${evaluation.reason}`);
-        await this.bscClient.swapTokenForBNB(
+        const exitResult = await this.bscClient.swapTokenForBNB(
           token,
           parseFloat(position.amount),
           this.config.slippageBps,
           this.config.dryRun,
         );
-        this.positions.delete(token);
+        // Only drop the position if the exit swap actually succeeded. A failed
+        // exit must NOT delete the position, otherwise the agent believes it has
+        // exited while still holding the token on-chain (ghost position).
+        if (exitResult.success) {
+          this.positions.delete(token);
+        } else {
+          logRiskWarning(
+            `Stop-loss/take-profit exit for ${token} FAILED — position retained for retry: ${exitResult.error ?? 'unknown error'}`,
+          );
+        }
       }
     }
   }

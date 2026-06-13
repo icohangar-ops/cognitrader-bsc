@@ -11,6 +11,25 @@ import { getLogger } from '../utils/logger';
 
 const execAsync = promisify(exec);
 
+// ─── Shell-Injection Guards ────────────────────────────────
+// All values interpolated into TWAK CLI commands must be validated against a
+// strict allowlist regex before reaching the shell. This prevents command
+// injection via externally-sourced fields (competition ids, tx data, payment
+// details). Any value containing shell metacharacters is rejected outright.
+
+const HEX_RE = /^0x[0-9a-fA-F]*$/;            // addresses / calldata
+const DECIMAL_RE = /^[0-9]+(\.[0-9]+)?$/;     // amounts / values
+const TOKEN_SYMBOL_RE = /^[A-Za-z0-9]{1,16}$/; // token symbols
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;        // competition ids
+const MEMO_RE = /^[A-Za-z0-9 _.,:-]{0,128}$/; // free-text memo (no shell metachars)
+
+function validateField(value: string, pattern: RegExp, fieldName: string): string {
+  if (typeof value !== 'string' || !pattern.test(value)) {
+    throw new Error(`TWAK: invalid ${fieldName} (failed validation): rejected to prevent command injection`);
+  }
+  return value;
+}
+
 export interface TWAKWallet {
   address: string;
   chain: string;
@@ -102,8 +121,10 @@ export class TrustWalletAgentKit {
     getLogger().info(`Registering for competition ${competitionId}...`);
 
     try {
+      const safeId = validateField(competitionId, ID_RE, 'competitionId');
+      const safeWallet = validateField(this.wallet?.address ?? '', HEX_RE, 'wallet address');
       const { stdout } = await execAsync(
-        `twak compete register --id ${competitionId} --wallet ${this.wallet?.address} --json`,
+        `twak compete register --id ${safeId} --wallet ${safeWallet} --json`,
       );
       const result = JSON.parse(stdout);
       getLogger().info(`Competition registration result: ${result.status}`);
@@ -127,8 +148,11 @@ export class TrustWalletAgentKit {
     getLogger().info(`Signing transaction to ${txData.to}`);
 
     try {
+      const safeTo = validateField(txData.to, HEX_RE, 'tx to');
+      const safeValue = validateField(txData.value, DECIMAL_RE, 'tx value');
+      const safeData = validateField(txData.data, HEX_RE, 'tx data');
       const { stdout } = await execAsync(
-        `twak tx sign --to ${txData.to} --value ${txData.value} --data ${txData.data} --json`,
+        `twak tx sign --to ${safeTo} --value ${safeValue} --data ${safeData} --json`,
       );
       const result = JSON.parse(stdout);
       return result.signedTx;
@@ -150,9 +174,14 @@ export class TrustWalletAgentKit {
     getLogger().info(`X402 payment: ${payment.amount} ${payment.token} → ${payment.recipient}`);
 
     try {
-      const memoParam = payment.memo ? ` --memo "${payment.memo}"` : '';
+      const safeRecipient = validateField(payment.recipient, HEX_RE, 'payment recipient');
+      const safeAmount = validateField(payment.amount, DECIMAL_RE, 'payment amount');
+      const safeToken = validateField(payment.token, TOKEN_SYMBOL_RE, 'payment token');
+      const memoParam = payment.memo
+        ? ` --memo "${validateField(payment.memo, MEMO_RE, 'payment memo')}"`
+        : '';
       const { stdout } = await execAsync(
-        `twak x402 pay --to ${payment.recipient} --amount ${payment.amount} --token ${payment.token}${memoParam} --json`,
+        `twak x402 pay --to ${safeRecipient} --amount ${safeAmount} --token ${safeToken}${memoParam} --json`,
       );
       const result = JSON.parse(stdout);
 
