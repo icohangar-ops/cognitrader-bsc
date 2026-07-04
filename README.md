@@ -209,6 +209,40 @@ An additional layer via Trust Wallet Agent Kit:
 
 ---
 
+## Decision Governance (CHP gate)
+
+Every capital-moving trade passes through a **CHP-style decision gate**
+(`src/chp/`) before submission — a TypeScript port of the Consensus Hardening
+Protocol pattern from the `cleanmandate` / `swarmfi-executor` donor repos.
+
+**Policy** lives in [`policy.yaml`](./policy.yaml): `max_notional_usd` (hard
+ceiling), `daily_notional_cap_usd`, `per_asset_limits`, a `hitl_threshold_usd`
+above which human approval is required, `allowed_actions`, and `min_confidence`.
+If `policy.yaml` is missing or unparseable the gate falls back to a conservative
+built-in default and logs a warning (non-breaking).
+
+**Gate** (`src/chp/gate.ts`) drives each proposed action through decision states
+`EXPLORING → PROVISIONAL → LOCKED` (or `HITL_REQUIRED` / `BLOCKED`), runs a
+lightweight adversarial/sanity check (positive finite notional, minimum signal
+confidence, non-HOLD), and records per-decision provenance (UUID, timestamp,
+SHA-256 content hash, per-claim results) in an append-only ledger.
+
+It is wired into `StrategyEngine.processSignal()`: a trade's BNB notional is
+converted to USD (via `agent.bnbPriceUsd`, default 600) and evaluated by
+`chpGate.evaluate(action)`. Under-threshold trades `LOCK` and proceed;
+at/above `hitl_threshold_usd` they return `HITL_REQUIRED` and are not
+submitted; above `max_notional_usd`, a per-asset cap, or the daily cap they are
+`BLOCKED`. A HITL trade can be promoted with `chpGate.approveHuman(...)`.
+
+Run the gate tests:
+
+```bash
+npm test                                   # full suite (includes CHP)
+node --import tsx --test tests/chpGate.test.ts   # CHP gate only
+```
+
+---
+
 ## Getting Started
 
 ### Prerequisites

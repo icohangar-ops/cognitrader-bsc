@@ -194,6 +194,11 @@ export interface AgentConfig {
   strategies: StrategyType[];
   tokens: string[];
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Reference BNB→USD price used to convert a trade's BNB notional into
+   * USD for the CHP decision gate (src/chp). Defaults to 600 when unset.
+   */
+  bnbPriceUsd?: number;
 }
 
 export interface FullConfig {

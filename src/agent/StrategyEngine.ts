@@ -16,6 +16,7 @@ import { TrustWalletAgentKit } from '../integrations/twak';
 import { RiskManager } from './RiskManager';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
 import { getLogger, logTrade, logRiskWarning } from '../utils/logger';
+import { ChpGate, type ChpAction } from '../chp/gate';
 
 export class StrategyEngine {
   private config: AgentConfig;
@@ -24,6 +25,7 @@ export class StrategyEngine {
   private riskManager: RiskManager;
   private agentSDK: BNBAgentSDK;
   private positions: Map<string, Position>;
+  private chpGate: ChpGate;
 
   constructor(
     config: AgentConfig,
@@ -31,6 +33,7 @@ export class StrategyEngine {
     twak: TrustWalletAgentKit,
     riskManager: RiskManager,
     agentSDK: BNBAgentSDK,
+    chpGate?: ChpGate,
   ) {
     this.config = config;
     this.bscClient = bscClient;
@@ -38,6 +41,9 @@ export class StrategyEngine {
     this.riskManager = riskManager;
     this.agentSDK = agentSDK;
     this.positions = new Map();
+    // Decision-governance gate. Loads policy.yaml (conservative default
+    // if missing). Every capital-moving trade passes through it.
+    this.chpGate = chpGate ?? new ChpGate();
   }
 
   // ─── Main Execution Loop ──────────────────────────────────
@@ -115,6 +121,34 @@ export class StrategyEngine {
       for (const warning of riskAssessment.warnings) {
         logRiskWarning(warning);
       }
+    }
+
+    // ─── CHP decision gate (governance) ───────────────────────
+    // Convert the BNB notional to USD and run it through the policy
+    // gate. Blocked or HITL-required trades are not submitted.
+    const bnbPriceUsd = this.config.bnbPriceUsd ?? 600;
+    const notionalUsd = parseFloat(decision.amountIn) * bnbPriceUsd;
+    const avgConfidence =
+      decision.signals.reduce((s, sig) => s + sig.confidence, 0) /
+      Math.max(decision.signals.length, 1);
+    const chp = this.chpGate.evaluate({
+      action: decision.direction as ChpAction,
+      asset: decision.token,
+      notionalUsd,
+      confidence: avgConfidence,
+      rationale: decision.reasoning,
+    });
+    if (!chp.allowed) {
+      if (chp.requiresHuman) {
+        logRiskWarning(
+          `CHP gate requires human approval for ${decision.token} ($${notionalUsd.toFixed(0)}): ${chp.reason} [decision ${chp.provenance.decisionId}]`,
+        );
+      } else {
+        getLogger().warn(
+          `${decision.token}: CHP gate ${chp.state} — ${chp.reason} [decision ${chp.provenance.decisionId}]`,
+        );
+      }
+      return this.noopResult(signal.token);
     }
 
     // Log trade decision
