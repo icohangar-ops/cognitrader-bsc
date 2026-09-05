@@ -19,6 +19,7 @@ import { SignalEngine } from './SignalEngine';
 import { RiskManager } from './RiskManager';
 import { StrategyEngine } from './StrategyEngine';
 import { getLogger, logMetrics } from '../utils/logger';
+import { tracePrismLLM } from '../observability/prism';
 
 export class CogniTrader {
   // ─── Services ──────────────────────────────────────────────
@@ -93,6 +94,7 @@ export class CogniTrader {
   // ─── Initialization ───────────────────────────────────────
 
   async initialize(): Promise<void> {
+    const startedAt = Date.now();
     getLogger().info('🚀 Initializing CogniTrader BSC...');
     getLogger().info('━'.repeat(60));
 
@@ -129,6 +131,32 @@ export class CogniTrader {
       }`);
       getLogger().info('━'.repeat(60));
 
+      void tracePrismLLM({
+        traceId: `cognitrader-init-${startedAt}`,
+        agentId: 'cognitrader-bsc',
+        agentName: 'CogniTrader BSC',
+        model: 'bootstrap',
+        inputMessages: [
+          { role: 'system', content: 'Initialize the CogniTrader BSC runtime.' },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              tokens: this.config.agent.tokens,
+              strategies: this.config.agent.strategies,
+              dryRun: this.config.agent.dryRun,
+            }),
+          },
+        ],
+        output: JSON.stringify({
+          walletMode: this.twak.getMode(),
+          balanceBNB: balance,
+        }),
+        latencyMs: Date.now() - startedAt,
+        metadata: {
+          pollingIntervalMs: this.config.agent.pollingIntervalMs,
+        },
+      });
+
     } catch (error) {
       this.status = 'ERROR';
       const msg = error instanceof Error ? error.message : String(error);
@@ -164,6 +192,10 @@ export class CogniTrader {
   async runCycle(): Promise<void> {
     const cycleStart = Date.now();
     this.cycleCount++;
+    let signalCount = 0;
+    let tradeCount = 0;
+    let tradeSuccessCount = 0;
+    let cycleError = '';
 
     getLogger().info(`\n${'═'.repeat(60)}`);
     getLogger().info(`📊 CYCLE #${this.cycleCount} — ${new Date().toISOString()}`);
@@ -178,6 +210,7 @@ export class CogniTrader {
         this.config.agent.tokens,
         snapshot,
       );
+      signalCount = signals.length;
       this.metrics.signalsGenerated += signals.length;
 
       // Step 3: Log signals
@@ -195,6 +228,8 @@ export class CogniTrader {
       // Step 4: Execute trades
       if (signals.length > 0) {
         const results = await this.strategyEngine.executeSignals(signals);
+        tradeCount = results.length;
+        tradeSuccessCount = results.filter((result) => result.success).length;
         this.processTradeResults(results);
       }
 
@@ -212,13 +247,44 @@ export class CogniTrader {
     } catch (error) {
       this.status = 'ERROR';
       const msg = error instanceof Error ? error.message : String(error);
+      cycleError = msg;
       getLogger().error(`❌ Cycle #${this.cycleCount} failed: ${msg}`);
       this.status = 'RUNNING'; // Recover and continue
-    }
+    } finally {
+      this.lastCycleTime = Date.now() - cycleStart;
+      this.metrics.cycleCount = this.cycleCount;
+      this.metrics.lastCycleTime = this.lastCycleTime;
 
-    this.lastCycleTime = Date.now() - cycleStart;
-    this.metrics.cycleCount = this.cycleCount;
-    this.metrics.lastCycleTime = this.lastCycleTime;
+      void tracePrismLLM({
+        traceId: `cognitrader-cycle-${this.cycleCount}`,
+        agentId: 'cognitrader-bsc',
+        agentName: 'CogniTrader BSC',
+        model: 'agent-cycle',
+        inputMessages: [
+          { role: 'system', content: 'Run one trading cycle and report the outcome.' },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              cycle: this.cycleCount,
+              tokens: this.config.agent.tokens,
+              dryRun: this.config.agent.dryRun,
+            }),
+          },
+        ],
+        output: JSON.stringify({
+          status: this.status,
+          signals: signalCount,
+          trades: tradeCount,
+          successfulTrades: tradeSuccessCount,
+          error: cycleError || undefined,
+        }),
+        latencyMs: this.lastCycleTime,
+        metadata: {
+          portfolioValueBNB: this.metrics.portfolio.totalValueBNB,
+          signalsActedOn: this.metrics.signalsActedOn,
+        },
+      });
+    }
   }
 
   // ─── Trade Result Processing ───────────────────────────────

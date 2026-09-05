@@ -207,6 +207,11 @@ An additional layer via Trust Wallet Agent Kit:
 - **Confirmation mode** — Require manual approval for trades (autonomous mode toggle)
 - **Daily spend limit** — Cumulative daily limit across all transactions
 
+## PRISMtrace
+
+Set `PRISMTRACE_API_KEY` and `PRISMTRACE_PROJECT_ID` to export startup and cycle traces to BlockConvey.
+`PRISMTRACE_HOST` is optional and defaults to `https://api.prism.blockconvey.com`.
+
 ---
 
 ## Decision Governance (CHP gate)
