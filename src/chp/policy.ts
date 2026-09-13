@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getLogger } from '../utils/logger';
+import { resolveWithinBase } from '../utils/safePath';
 
 export type ChpAction = 'LONG' | 'SHORT' | 'HOLD';
 
@@ -53,19 +54,27 @@ export function defaultPolicyPath(): string {
  * parsed — the gate is intentionally non-breaking.
  */
 export function loadPolicy(policyPath: string = defaultPolicyPath()): RiskPolicy {
-  if (!fs.existsSync(policyPath)) {
+  let safePath: string;
+  try {
+    safePath = resolveWithinBase(policyPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    getLogger().warn(`[CHP] rejected policy path ${policyPath} (${msg}) — using default policy`);
+    return defaultPolicy();
+  }
+  if (!fs.existsSync(safePath)) {
     getLogger().warn(
-      `[CHP] policy file not found at ${policyPath} — using conservative default policy`,
+      `[CHP] policy file not found at ${safePath} — using conservative default policy`,
     );
     return defaultPolicy();
   }
   try {
-    const raw = fs.readFileSync(policyPath, 'utf8');
+    const raw = fs.readFileSync(safePath, 'utf8');
     const parsed = parseFlatYaml(raw);
     return coercePolicy(parsed);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    getLogger().warn(`[CHP] failed to parse policy ${policyPath} (${msg}) — using default policy`);
+    getLogger().warn(`[CHP] failed to parse policy ${safePath} (${msg}) — using default policy`);
     return defaultPolicy();
   }
 }

@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import type { TWAKConfig, TradeResult, BSCConfig } from '../utils/types';
 import { getLogger } from '../utils/logger';
+import { resolveWithinBase } from '../utils/safePath';
 
 const execAsync = promisify(exec);
 
@@ -61,12 +62,13 @@ export class TrustWalletAgentKit {
     getLogger().info('🔐 Initializing Trust Wallet Agent Kit...');
 
     // Try to load existing wallet or create via TWAK CLI
-    if (existsSync(this.config.walletPath)) {
-      const walletData = JSON.parse(readFileSync(this.config.walletPath, 'utf-8'));
+    const walletPath = resolveWithinBase(this.config.walletPath);
+    if (existsSync(walletPath)) {
+      const walletData = JSON.parse(readFileSync(walletPath, 'utf-8'));
       this.wallet = {
         address: walletData.address,
         chain: 'bsc',
-        path: this.config.walletPath,
+        path: walletPath,
       };
       getLogger().info(`Loaded existing TWAK wallet: ${this.wallet.address}`);
     } else {
@@ -74,7 +76,7 @@ export class TrustWalletAgentKit {
       this.wallet = {
         address: this.bscConfig.walletAddress,
         chain: 'bsc',
-        path: this.config.walletPath,
+        path: walletPath,
       };
     }
 
@@ -96,14 +98,15 @@ export class TrustWalletAgentKit {
       const { stdout } = await execAsync('twak wallet create --chain bsc --json');
       const walletData = JSON.parse(stdout);
 
+      const walletPath = resolveWithinBase(this.config.walletPath);
       this.wallet = {
         address: walletData.address,
         chain: 'bsc',
-        path: this.config.walletPath,
+        path: walletPath,
       };
 
       // Persist wallet
-      writeFileSync(this.config.walletPath, JSON.stringify(walletData, null, 2));
+      writeFileSync(walletPath, JSON.stringify(walletData, null, 2));
       getLogger().info(`TWAK wallet created: ${this.wallet.address}`);
       return this.wallet;
     } catch (error) {
@@ -111,7 +114,7 @@ export class TrustWalletAgentKit {
       this.wallet = {
         address: this.bscConfig.walletAddress,
         chain: 'bsc',
-        path: this.config.walletPath,
+        path: resolveWithinBase(this.config.walletPath),
       };
       return this.wallet;
     }
