@@ -23,23 +23,23 @@
 
 ## Overview
 
-**CogniTrader BSC** is a fully autonomous AI trading agent built for the BNB Smart Chain. It continuously monitors market data from CoinMarketCap, generates multi-signal trade recommendations using three complementary strategies, enforces strict risk management guardrails, and executes trades non-custodially via PancakeSwap — all orchestrated through the Trust Wallet Agent Kit (TWAK) and BNB AI Agent SDK.
+**CogniTrader BSC** is a fully autonomous AI trading agent built for the BNB Smart Chain. It continuously monitors market data from CoinMarketCap, generates multi-signal trade recommendations using three complementary strategies, enforces strict risk management guardrails, and executes trades non-custodially via PancakeSwap — orchestrated by the in-repo agent modules `src/integrations/bnb-agent-sdk.ts` and `src/integrations/twak.ts` (local wrappers, not external SDK packages).
 
 ### Why CogniTrader Wins
 
 Most trading bots use a single indicator or simple threshold logic. CogniTrader combines **three independent strategy engines** (Momentum, Sentiment, Mean Reversion) into a weighted composite signal, requiring multi-factor consensus before acting. The agent never blindly follows one signal — it demands agreement across technical, fundamental, and statistical dimensions.
 
-The architecture is **non-custodial by design**: your private key never leaves the agent process, and TWAK's policy engine can enforce hard limits on trade sizes, allowed tokens, and daily exposure — even adding manual confirmation requirements for high-value transactions. The BNB AI Agent SDK provides persistent memory (learning from past trades) and a tool registry that enables the agent to reason about risk, position sizing (Kelly Criterion), and market regime.
+The architecture is **non-custodial by design**: your private key never leaves the agent process, and the in-repo TWAK wrapper (`src/integrations/twak.ts`) enforces hard limits on trade sizes, allowed tokens, and daily exposure — even adding manual confirmation requirements for high-value transactions. The in-repo agent module (`src/integrations/bnb-agent-sdk.ts`) provides persistent memory (learning from past trades) and a tool registry that enables the agent to reason about risk, position sizing (Kelly Criterion), and market regime.
 
-CogniTrader ships production-ready with Docker support, structured logging (Winston), health checks, graceful shutdown, dry-run mode for safe testing, and a `bash` launcher with pre-flight validation. Over **3,500 lines of TypeScript** across 15 source files, with full type safety and zero dependencies on paid ML APIs.
+CogniTrader ships production-ready with Docker support, structured logging (Winston), health checks, graceful shutdown, dry-run mode for safe testing, and a `bash` launcher with pre-flight validation. Over **5,800 lines of TypeScript** across 32 source files (verified `src/` tree), with full type safety and zero dependencies on paid ML APIs.
 
 ---
 
 ## Features
 
 - **3 Independent Strategy Engines** — Momentum (RSI + MACD + Volume), Sentiment (CMC Fear&Greed divergence), Mean Reversion (z-score + Bollinger Bands)
-- **Weighted Signal Aggregation** — BNB AI Agent SDK orchestrates signals with configurable strategy weights (40/35/25) and consensus logic
-- **Non-Custodial Execution** — TWAK policy engine + Ethers.js v6 for PancakeSwap swaps on BSC
+- **Weighted Signal Aggregation** — `orchestrateSignal` in `src/integrations/bnb-agent-sdk.ts` computes the weighted composite (40/35/25 hardcoded) with consensus logic
+- **Non-Custodial Execution** — in-repo TWAK wrapper (`src/integrations/twak.ts`) + Ethers.js v6 for PancakeSwap swaps on BSC
 - **Strict Risk Guardrails** — Max 10% position size, 5% stop-loss, 15% take-profit, 3 concurrent positions, 10% daily drawdown circuit breaker
 - **Agent Memory** — Persistent short-term and long-term trade memory with disk persistence across restarts
 - **Market Regime Awareness** — Fear & Greed Index filters adjust signal confidence in extreme market conditions
@@ -87,9 +87,9 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 ### Data Flow (Per Cycle)
 
 ```
-1. FETCH     CoinMarketCap API → Market Snapshot (quotes + Fear&Greed + trending)
+1. FETCH     CoinMarketCap API → Market Snapshot (quotes + Fear&Greed + trending; candle history is synthetic — see Data Source note)
 2. ANALYZE   Each token → 3 strategies generate independent signals
-3. AGGREGATE BNB AI Agent SDK → Weighted composite score + consensus direction
+3. AGGREGATE BNBAgentSDK (in-repo wrapper) → Weighted composite score + consensus direction
 4. FILTER    Minimum score threshold (65) + WEAK signal rejection
 5. RISK      Position sizing, max positions, drawdown check, duplicate detection
 6. POLICY    TWAK allowed tokens, max tx value, confirmation mode
@@ -105,7 +105,7 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 
 ### 1. Momentum Strategy (RSI + MACD + Volume)
 
-**Weight: 40%** | Minimum data: 30 candles
+**Weight: 40%** | Minimum data: 30 candles | **Data source: synthetic** — candles come from `generateSyntheticCandles()` in `src/agent/SignalEngine.ts` (random walk; real CMC historical API is a production TODO), while indicator math (RSI/MACD) is real
 
 Combines four technical indicators into a 100-point composite score:
 
@@ -122,7 +122,7 @@ Combines four technical indicators into a 100-point composite score:
 
 ### 2. Sentiment Strategy (CMC Fear&Greed Divergence)
 
-**Weight: 35%** | Minimum data: CMC quote + Fear&Greed index
+**Weight: 35%** | Minimum data: CMC quote + Fear&Greed index | **Data source: live** — real CMC REST client (`src/integrations/cmc.ts`, `pro-api.coinmarketcap.com`)
 
 A data-driven sentiment strategy using CoinMarketCap's proprietary Fear & Greed Index and market performance data:
 
@@ -137,7 +137,7 @@ A data-driven sentiment strategy using CoinMarketCap's proprietary Fear & Greed 
 
 ### 3. Mean Reversion Strategy (Statistical Z-Score)
 
-**Weight: 25%** | Minimum data: 20 candles
+**Weight: 25%** | Minimum data: 20 candles | **Data source: synthetic** — same `generateSyntheticCandles()` path as Momentum in `src/agent/SignalEngine.ts`
 
 A statistical approach assuming prices revert to their historical mean:
 
@@ -200,7 +200,7 @@ Half-Kelly is used instead of full Kelly for additional safety margin, reducing 
 
 ### TWAK Policy Engine (Non-Custodial Guardrails)
 
-An additional layer via Trust Wallet Agent Kit:
+An additional layer via the in-repo TWAK wrapper (`src/integrations/twak.ts` — shells out to a `twak` CLI when present, falls back to the configured wallet address when absent):
 
 - **Allowed tokens whitelist** — Only tokens in the configured list can be traded
 - **Max transaction value** — Hard cap per transaction in BNB
