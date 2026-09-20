@@ -625,3 +625,11 @@ Track 1: Autonomous Trading Agents — $24,000 Prize Pool
 Made with TypeScript, Ethers.js, and a lot of signal analysis.
 
 </div>
+
+## Propagation decisions (SecOps/Gov wave C)
+
+### Row 34 — guardrail fixtures: REVERSED (verified against current state)
+
+No LLM-authored content reaches the decision path. The only LLM-shaped surfaces are fire-and-forget telemetry wrappers (`void tracePrismLLM(...)` at src/agent/CogniTrader.ts:137 and :278) that post synthetic cycle traces ('bootstrap', 'agent-cycle') to the Prism observability host; their output is discarded and consumed by nothing. The trade decision path itself is deterministic (SignalEngine / RiskManager / StrategyEngine — verified during the row-23 supply-chain PR #5 merge wave). Guardrail fixtures pin critic prompts and brand rules; with no LLM-authored user-facing content there is nothing for them to pin — they would be fixtures of nothing.
+
+**Revisit trigger:** an LLM-authored surface enters the trade path or user-facing output (e.g. natural-language trade rationales). Then add critic-prompt pins in the row-34 shape before shipping it.
