@@ -178,6 +178,14 @@ export class BNBAgentSDK {
     // ── Adversarial split damping (row 1, ported from swarmfi-preps) ──
     // If directional voters are near-evenly split, the signal is noise:
     // scale the composite down instead of trading a near-tie at full size.
+    //
+    // Deliberate product posture at this portfolio's scale (review finding):
+    // with exactly 3 strategy sources, ANY 2-vs-1 directional split takes
+    // ×0.7 — a raw composite of 77 damps to 54 and the 65-point quality gate
+    // rejects it, so a 2-vs-1 split only survives with a raw score ≥ 93. The
+    // effective rule is near-unanimous agreement before a directional trade,
+    // which is intended for a live-capital agent. Loosen deliberately if the
+    // voter count grows; the damping constants were not re-derived locally.
     const directionalCount = longCount + shortCount;
     const balanceRatio = directionalCount > 0
       ? Math.abs(longCount - shortCount) / directionalCount

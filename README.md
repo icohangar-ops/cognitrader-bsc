@@ -38,9 +38,9 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 ## Features
 
 - **3 Independent Strategy Engines** — Momentum (RSI + MACD + Volume), Sentiment (CMC Fear&Greed divergence), Mean Reversion (z-score + Bollinger Bands)
-- **Weighted Signal Aggregation** — `orchestrateSignal` in `src/integrations/bnb-agent-sdk.ts` computes the weighted composite (40/35/25 hardcoded) with consensus logic, and **adversarial split damping** (`splitDamping`) scales near-tie directional splits down instead of trading them at full size
-- **Tiered Market Data** — `TieredMarketData` in `src/integrations/marketData.ts` resolves every payload live CMC → disk cache → deterministic mock, always badged (`[live]` / `[cache]` / `[mock]` in the logs) via the vendored `resolveTiered` (`src/lib/resilience/tieredSource.ts`)
-- **Signed Execution Receipts** — the CHP verdict *selects* a trade; `issueTradeReceipt`/`verifyExecutionReceipt` in `src/chp/receipt.ts` *authorizes* it: a single-use HMAC-signed receipt (actor + tool + resource + args-hash + policy version + expiry + nonce), replay-guarded by `src/chp/replay.ts` — no receipt, no execution
+- **Weighted Signal Aggregation** — `orchestrateSignal` in `src/integrations/bnb-agent-sdk.ts` computes the weighted composite (40/35/25 hardcoded) with consensus logic, and **adversarial split damping** (`splitDamping`) scales near-tie directional splits down instead of trading them at full size. With 3 strategy sources, any 2-vs-1 split takes ×0.7 — only a raw composite ≥ 93 survives the 65-point gate — so the effective posture is **near-unanimous agreement before a directional trade**, deliberate for a live-capital agent
+- **Tiered Market Data** — `TieredMarketData` in `src/integrations/marketData.ts` resolves every payload live CMC → disk cache → deterministic mock, always badged (`[live]` / `[cache]` / `[mock]` in the logs) via the vendored `resolveTiered` (`src/lib/resilience/tieredSource.ts`); **trading is blocked on the mock tier** (`tradingBlockedForTier` — mock candles repeat identical readings during a CMC outage, so capital never moves on placeholder prices; exits still run on real chain prices)
+- **Signed Execution Receipts** — the CHP verdict *selects* a trade; `issueTradeReceipt`/`verifyExecutionReceipt` in `src/chp/receipt.ts` *authorizes* it: a single-use HMAC-signed receipt (actor + tool + resource + args-hash + policy version + expiry + nonce), replay-guarded by `src/chp/replay.ts` with consumed nonces persisted across restarts — no receipt, no execution
 - **Non-Custodial Execution** — in-repo TWAK wrapper (`src/integrations/twak.ts`) + Ethers.js v6 for PancakeSwap swaps on BSC
 - **Strict Risk Guardrails** — Max 10% position size, 5% stop-loss, 15% take-profit, 3 concurrent positions, 10% daily drawdown circuit breaker
 - **Agent Memory** — Persistent short-term and long-term trade memory with disk persistence across restarts
@@ -302,10 +302,13 @@ trade — it does not by itself authorize execution. `executeTrade` in
 nonce` (args hashed via `canonicalJson` so the receipt binds the exact
 trade arguments), with the nonce consumed single-use by `src/chp/replay.ts`.
 Missing, tampered, expired, wrong-policy-version, or replayed receipts all
-fail closed: the trade is refused and logged, nothing executes. The issued
-receipt's nonce and actor are recorded with the execution artifacts
-(`receiptNonce` / `receiptActor`) in the decision ledger. Set
-`CHP_RECEIPT_KEY` to override the documented dev-only default signing key.
+fail closed: the trade is refused and logged, nothing executes. Consumed
+nonces persist to a JSONL replay log (`FileReplayStore`, default
+`./state/replay-nonces.jsonl`, gitignored) so a restart cannot replay a
+pre-restart receipt within its TTL. The issued receipt's nonce and actor
+are recorded with the execution artifacts (`receiptNonce` / `receiptActor`)
+in the decision ledger. `CHP_RECEIPT_KEY` is **required** — there is no
+default signing key; the agent refuses to start without one.
 
 **Divergence from the Python reference, documented:** the published
 `@cubiczan/chp` npm package implements Profile B (capital gate) only — its
@@ -322,8 +325,10 @@ a golden set.
 entries; `getPendingChpConfirmations()` lists parked trades;
 `confirmChpDecision(decisionId, confirmedBy)` locks and executes one.
 Configuration: `CHP_REQUIRE_HUMAN_LOCK` (default on), `CHP_LEDGER_PATH`
-(default `./state/chp-decisions.jsonl`, gitignored), and `CHP_RECEIPT_KEY`
-(HMAC key for execution receipts — `src/chp/receipt.ts`).
+(default `./state/chp-decisions.jsonl`, gitignored), `CHP_RECEIPT_KEY`
+(HMAC key for execution receipts — required, no default —
+`src/chp/receipt.ts`), and `CHP_REPLAY_LOG` (consumed-nonce replay log,
+default `./state/replay-nonces.jsonl` — `src/chp/replay.ts`).
 
 Run the hardening tests:
 
