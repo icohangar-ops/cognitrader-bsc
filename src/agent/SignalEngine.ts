@@ -19,6 +19,7 @@ import { MomentumStrategy } from '../strategies/MomentumStrategy';
 import { SentimentStrategy } from '../strategies/SentimentStrategy';
 import { MeanReversionStrategy } from '../strategies/MeanReversion';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
+import { TieredMarketData } from '../integrations/marketData';
 import { getLogger, logSignal } from '../utils/logger';
 
 export class SignalEngine {
@@ -27,15 +28,15 @@ export class SignalEngine {
   private meanReversionStrategy: MeanReversionStrategy;
   private agentSDK: BNBAgentSDK;
   private config: AgentConfig;
-  private ohlcvCache: Map<string, { candles: Candle[]; fetchedAt: number }>;
+  private marketData: TieredMarketData;
 
-  constructor(config: AgentConfig, agentSDK: BNBAgentSDK) {
+  constructor(config: AgentConfig, agentSDK: BNBAgentSDK, marketData: TieredMarketData) {
     this.config = config;
     this.agentSDK = agentSDK;
     this.momentumStrategy = new MomentumStrategy();
     this.sentimentStrategy = new SentimentStrategy();
     this.meanReversionStrategy = new MeanReversionStrategy();
-    this.ohlcvCache = new Map();
+    this.marketData = marketData;
   }
 
   // ─── Main Signal Generation Pipeline ──────────────────────
@@ -165,74 +166,15 @@ export class SignalEngine {
 
   // ─── OHLCV Data Management ─────────────────────────────────
 
+  /**
+   * Tiered fetch (row 3, src/integrations/marketData.ts):
+   * LIVE CMC OHLCV → disk cache → deterministic mock, always badged.
+   * The tier badge is logged here — the human reader of strategy output
+   * must be able to tell real candles from placeholders.
+   */
   async getOHLCVData(token: string): Promise<Candle[]> {
-    const cached = this.ohlcvCache.get(token);
-    const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-    if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL) {
-      return cached.candles;
-    }
-
-    // Generate synthetic OHLCV data from CMC data for demonstration
-    // In production, this would fetch from CMC historical API
-    const candles = this.generateSyntheticCandles(token, 168);
-
-    this.ohlcvCache.set(token, { candles, fetchedAt: Date.now() });
-    return candles;
-  }
-
-  private generateSyntheticCandles(_token: string, count: number): Candle[] {
-    // Generate realistic synthetic candles for strategy computation
-    // In production, use CMC historical data API
-    const candles: Candle[] = [];
-    const now = Math.floor(Date.now() / 1000);
-    let price = 1 + Math.random() * 100; // Random starting price
-
-    for (let i = 0; i < count; i++) {
-      const volatility = 0.02 + Math.random() * 0.05;
-      const change = (Math.random() - 0.48) * volatility * price; // Slight upward bias
-
-      const open = price;
-      const close = price + change;
-      const high = Math.max(open, close) * (1 + Math.random() * 0.01);
-      const low = Math.min(open, close) * (1 - Math.random() * 0.01);
-      const volume = 100000 + Math.random() * 1000000;
-
-      candles.push({
-        timestamp: now - (count - i) * 3600,
-        open,
-        high,
-        low,
-        close,
-        volume,
-      });
-
-      price = close;
-    }
-
-    return candles;
-  }
-
-  // ─── Cache Management ───────────────────────────────────────
-
-  clearCache(): void {
-    this.ohlcvCache.clear();
-    getLogger().debug('OHLCV cache cleared');
-  }
-
-  getCacheStats(): { tokens: number; oldest: number | null; newest: number | null } {
-    let oldest: number | null = null;
-    let newest: number | null = null;
-
-    for (const entry of this.ohlcvCache.values()) {
-      if (oldest === null || entry.fetchedAt < oldest) oldest = entry.fetchedAt;
-      if (newest === null || entry.fetchedAt > newest) newest = entry.fetchedAt;
-    }
-
-    return {
-      tokens: this.ohlcvCache.size,
-      oldest,
-      newest,
-    };
+    const result = await this.marketData.getOHLCV(token, '1h', 168);
+    getLogger().info(`📊 OHLCV ${token}: [${result.badge}] ${result.value.candles.length} candles (${result.value.interval})`);
+    return result.value.candles;
   }
 }

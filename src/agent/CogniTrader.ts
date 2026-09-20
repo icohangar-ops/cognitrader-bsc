@@ -12,6 +12,7 @@ import type {
   Position,
 } from '../utils/types';
 import { CoinMarketCapClient } from '../integrations/cmc';
+import { TieredMarketData } from '../integrations/marketData';
 import { TrustWalletAgentKit } from '../integrations/twak';
 import { BSCClient } from '../integrations/bsc';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
@@ -25,6 +26,7 @@ export class CogniTrader {
   // ─── Services ──────────────────────────────────────────────
   private config: FullConfig;
   private cmc: CoinMarketCapClient;
+  private marketData: TieredMarketData;
   private twak: TrustWalletAgentKit;
   private bsc: BSCClient;
   private agentSDK: BNBAgentSDK;
@@ -81,7 +83,8 @@ export class CogniTrader {
     this.bsc = new BSCClient(config.bsc);
     this.agentSDK = new BNBAgentSDK(config.agent);
     this.riskManager = new RiskManager(config.agent);
-    this.signalEngine = new SignalEngine(config.agent, this.agentSDK);
+    this.marketData = new TieredMarketData(this.cmc);
+    this.signalEngine = new SignalEngine(config.agent, this.agentSDK, this.marketData);
     this.strategyEngine = new StrategyEngine(
       config.agent,
       this.bsc,
@@ -203,7 +206,10 @@ export class CogniTrader {
 
     try {
       // Step 1: Fetch market data
-      const snapshot = await this.cmc.getMarketSnapshot(this.config.agent.tokens);
+      // Tiered resolution (row 3): live CMC → disk cache → mock, always badged.
+      const snapshotResult = await this.marketData.getMarketSnapshot(this.config.agent.tokens);
+      const snapshot = snapshotResult.value;
+      getLogger().info(`📡 Market snapshot: [${snapshotResult.badge}]`);
 
       // Step 2: Generate signals
       const signals = await this.signalEngine.generateSignals(

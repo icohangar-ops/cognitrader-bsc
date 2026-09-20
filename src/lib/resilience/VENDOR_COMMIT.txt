@@ -9,9 +9,9 @@ Pin date         : 2026-09-20
 Sync status      : keep-in-sync — this directory is a vendored copy, not the package
 
 Scope of this copy
-------------------
-errors.ts, index.ts, ioRetry.ts, retry.ts, safeFetch.ts, timeout.ts
-(a subset of the canonical package's modules).
+-------------------
+errors.ts, index.ts, ioRetry.ts, retry.ts, safeFetch.ts, tieredSource.ts,
+timeout.ts (a subset of the canonical package's modules).
 
 Intentional local deltas (preserve these when syncing — do not "fix" them
 by copying canonical files over this directory wholesale)
@@ -20,8 +20,11 @@ by copying canonical files over this directory wholesale)
 - Import extensions are stripped (./errors, not ./errors.js) to
   match this repo's CommonJS/node moduleResolution; the canonical
   package targets ESM with .js specifiers.
-- The barrel (index.ts) exports only the subset this repo uses.
+- The barrel (index.ts) exports only the subset this repo uses
+  (tieredSource included since the tiered market-data service adopted it).
 - Vendored-header comments are paraphrased from upstream JSDoc.
+- tieredSource.ts is byte-identical to canonical at the pinned commit
+  (it has no relative imports, so no import-extension stripping applies).
 - Does not yet include the typescript-v0.2.0 clock fix
   (SlidingWindowRateLimiter.nowMs / retryAfterMs on the limiter's
   clock); it lands on the next sync.
