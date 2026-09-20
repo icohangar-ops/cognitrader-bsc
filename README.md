@@ -246,6 +246,74 @@ npm test                                   # full suite (includes CHP)
 node --import tsx --test tests/chpGate.test.ts   # CHP gate only
 ```
 
+## Consensus Hardening Protocol (CHP hardening gate)
+
+On top of the spend gate above, every trade decision is hardened through the
+**Consensus Hardening Protocol** (Profile A) — a TypeScript port of the
+`consensus-hardening-protocol` v0.1.1 semantics proven in the
+`erp-control-plane` promotion gate (commit 70678cc), so "why did the agent
+trade?" has a mechanical answer. Four stages wrap execution:
+
+1. **R0 gate — before the engine** (`src/chp/r0.ts`). "Is this trade solvable
+   from the current portfolio state?" Four criteria, results keyed
+   `Solvable` / `Scoped` / `Valid` / `Worth_it`, failures **FATAL** (HALT
+   refuses the trade with nothing executed or persisted, audited as
+   `chp_rejected`): the trade is constructible from portfolio state
+   (non-empty token, actionable direction, positive sizing basis, ≥ 0.001
+   BNB), execution is bounded (sane slippage, live deadline), the backing is
+   well-formed (a LONG swaps the base asset; a SHORT requires an existing
+   position to sell), and the signal is metric-bearing (average confidence
+   and composite score above the agent's own `min_confidence` /
+   `min_signal_score` thresholds).
+2. **Deterministic adversary foundation pass** (`src/chp/foundation.ts`).
+   After the guardrail stack (TWAK policy + risk assessment + spend gate)
+   passes, the adversary scores the trade out of 100: **40** guardrails,
+   **30** bounded result (finite size within available balance), **30**
+   state parity. Domain floors are the normative spec §5.3 map; this repo's
+   domain is `defi` → **floor 85**, so a trade without parity evidence
+   (70) cannot self-certify. A parity **MISMATCH** is fatal — a trade
+   contradicting recomputed portfolio state must not be executed, and no
+   confirmer can wave it through.
+3. **Human lock** (`src/chp/hardening.ts`). Sessions start `EXPLORING`; a
+   hardened trade opens `PROVISIONAL_LOCK` and only `confirmed_by` — a
+   named human applying CHP third-party validation — locks it (`LOCKED`).
+   `CHP_REQUIRE_HUMAN_LOCK` (default **ON**) makes the named confirmer
+   mandatory for every trade: a fully-gated trade parks and is not
+   submitted until `confirmChpDecision(decisionId, confirmedBy)` locks it.
+   With the flag off, a foundation-`PASS` trade proceeds unlocked (status
+   stays `PROVISIONAL_LOCK`, `confirmed_by: null`); a `REFRAME` trade still
+   cannot self-certify and is refused outright.
+4. **Decision record** (`src/chp/ledger.ts`). The case, verdicts, parity
+   evidence, and execution artifacts are serialized to canonical JSON,
+   sealed into a CHP payload envelope (`BEGIN_PAYLOAD [TRADE] …`), and
+   appended to an append-only JSONL ledger. The envelope validates
+   **structure only**, so the ledger adds its own SHA-256 `body_sha256`
+   digest; every read re-validates both and exposes `envelope_valid` and
+   `integrity_valid` — a tampered record reads as `integrity_valid: false`.
+
+**Divergence from the Python reference, documented:** the published
+`@cubiczan/chp` npm package implements Profile B (capital gate) only — its
+Profile A ops (R0, foundation, lock) are unsupported there — so the Profile A
+shape is ported directly from `consensus-hardening-protocol` 0.1.1. And where
+the erp reference pins parity to a dbt-pinned golden set, this repo has no
+golden artifact for trades: parity is asserted against recomputed portfolio /
+market state (the decision's size must re-derive from the same sizing basis
+the portfolio state implies, ± 0.001 BNB). State assertions serve in place of
+a golden set.
+
+**Surface** (via `CogniTrader`, the existing agent interface):
+`getChpDecisions(limit)` / `getChpDecision(id)` return revalidated ledger
+entries; `getPendingChpConfirmations()` lists parked trades;
+`confirmChpDecision(decisionId, confirmedBy)` locks and executes one.
+Configuration: `CHP_REQUIRE_HUMAN_LOCK` (default on) and `CHP_LEDGER_PATH`
+(default `./state/chp-decisions.jsonl`, gitignored).
+
+Run the hardening tests:
+
+```bash
+node --import tsx --test tests/chpHardening.test.ts   # CHP hardening only
+```
+
 ---
 
 ## Getting Started

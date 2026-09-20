@@ -109,7 +109,7 @@ export class TrustWalletAgentKit {
       writeFileSync(walletPath, JSON.stringify(walletData, null, 2));
       getLogger().info(`TWAK wallet created: ${this.wallet.address}`);
       return this.wallet;
-    } catch (error) {
+    } catch {
       getLogger().warn('TWAK CLI not available, using Ethers.js wallet instead');
       this.wallet = {
         address: this.bscConfig.walletAddress,
@@ -132,7 +132,7 @@ export class TrustWalletAgentKit {
       const result = JSON.parse(stdout);
       getLogger().info(`Competition registration result: ${result.status}`);
       return result.status === 'success';
-    } catch (error) {
+    } catch {
       getLogger().warn('TWAK compete register not available, skipping');
       return true;
     }

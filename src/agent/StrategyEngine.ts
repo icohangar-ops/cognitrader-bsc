@@ -10,6 +10,7 @@ import type {
   TradeResult,
   PortfolioState,
   Position,
+  RiskAssessment,
 } from '../utils/types';
 import { BSCClient } from '../integrations/bsc';
 import { TrustWalletAgentKit } from '../integrations/twak';
@@ -17,6 +18,26 @@ import { RiskManager } from './RiskManager';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
 import { getLogger, logTrade, logRiskWarning } from '../utils/logger';
 import { ChpGate, type ChpAction } from '../chp/gate';
+import {
+  ChpTradeGate,
+  ChpRejection,
+  type ChpVerdict,
+  type DecisionCase,
+  type FoundationAssessment,
+  type ParityEvidence,
+  type R0Evaluation,
+  type RevalidatedLedgerEntry,
+} from '../chp/hardening';
+
+/** A fully-gated trade parked as PROVISIONAL_LOCK pending a named confirmer. */
+interface PendingTrade {
+  kase: DecisionCase;
+  decision: TradeDecision;
+  assessment: FoundationAssessment;
+  r0Verdict: ChpVerdict;
+  foundationVerdict: ChpVerdict;
+  amountInBnb: number;
+}
 
 export class StrategyEngine {
   private config: AgentConfig;
@@ -26,6 +47,9 @@ export class StrategyEngine {
   private agentSDK: BNBAgentSDK;
   private positions: Map<string, Position>;
   private chpGate: ChpGate;
+  private chpHardening: ChpTradeGate;
+  /** Trades parked as PROVISIONAL_LOCK awaiting a named confirmer. */
+  private pendingTrades: Map<string, PendingTrade>;
 
   constructor(
     config: AgentConfig,
@@ -34,6 +58,7 @@ export class StrategyEngine {
     riskManager: RiskManager,
     agentSDK: BNBAgentSDK,
     chpGate?: ChpGate,
+    chpHardening?: ChpTradeGate,
   ) {
     this.config = config;
     this.bscClient = bscClient;
@@ -44,6 +69,10 @@ export class StrategyEngine {
     // Decision-governance gate. Loads policy.yaml (conservative default
     // if missing). Every capital-moving trade passes through it.
     this.chpGate = chpGate ?? new ChpGate();
+    // CHP hardening (consensus-hardening-protocol Profile A port):
+    // R0 -> deterministic adversary foundation -> human lock -> ledger.
+    this.chpHardening = chpHardening ?? new ChpTradeGate();
+    this.pendingTrades = new Map();
   }
 
   // ─── Main Execution Loop ──────────────────────────────────
@@ -97,6 +126,24 @@ export class StrategyEngine {
       return this.noopResult(signal.token);
     }
 
+    // Snapshot portfolio state once; R0 reads it and the risk engine reuses it.
+    const portfolio = await this.getPortfolioState();
+
+    // ─── CHP R0 gate — before the engine ──────────────────────────
+    // "Is this trade solvable from the current portfolio state?"
+    // Failures are FATAL: HALT refuses the trade before any guardrail,
+    // risk, or execution machinery runs (audited as chp_rejected).
+    let r0: R0Evaluation;
+    try {
+      r0 = this.chpHardening.openR0(this.r0Criteria(decision, signal));
+    } catch (error) {
+      if (error instanceof ChpRejection) {
+        logRiskWarning(`chp_rejected [R0] ${signal.token}: ${error.message} [r0 ${error.evaluation?.verdict}]`);
+        return this.noopResult(signal.token);
+      }
+      throw error;
+    }
+
     // TWAK policy check
     const policyResult = this.twak.checkPolicy({
       token: decision.token,
@@ -108,8 +155,7 @@ export class StrategyEngine {
       return this.noopResult(signal.token);
     }
 
-    // Risk assessment
-    const portfolio = await this.getPortfolioState();
+    // Risk assessment (reuses the R0 portfolio snapshot)
     const riskAssessment = this.riskManager.assessRisk(decision, portfolio);
 
     if (!riskAssessment.approved) {
@@ -159,8 +205,216 @@ export class StrategyEngine {
       reasoning: decision.reasoning,
     });
 
-    // Execute trade
-    return this.executeTrade(decision);
+    // ─── CHP foundation pass + human lock ─────────────────────
+    // The deterministic adversary scores the fully guarded trade
+    // (TWAK policy + risk assessment + spend gate = guardrails), then
+    // the case opens PROVISIONAL_LOCK pending human confirmation.
+    try {
+      return await this.hardenAndExecute(signal, decision, portfolio, riskAssessment, policyResult.allowed, r0);
+    } catch (error) {
+      if (error instanceof ChpRejection) {
+        logRiskWarning(`chp_rejected [foundation] ${signal.token}: ${error.message}`);
+        return this.noopResult(signal.token);
+      }
+      throw error;
+    }
+  }
+
+  // ─── CHP Hardening (consensus-hardening-protocol Profile A) ──
+
+  /** R0 criteria, trade-shaped: solvable from the current portfolio state? */
+  private r0Criteria(
+    decision: TradeDecision,
+    signal: AggregatedSignal,
+  ) {
+    const sizingBase = this.riskManager.getDailyStartValue();
+    const amountIn = parseFloat(decision.amountIn);
+    const avgConfidence =
+      signal.signals.reduce((sum, sig) => sum + sig.confidence, 0) /
+      Math.max(signal.signals.length, 1);
+    return {
+      solvable:
+        decision.token.trim() !== '' &&
+        (decision.direction === 'LONG' || decision.direction === 'SHORT') &&
+        sizingBase > 0 &&
+        amountIn >= 0.001,
+      scoped:
+        Number.isFinite(decision.slippageTolerance) &&
+        decision.slippageTolerance > 0 &&
+        Number.isFinite(decision.deadline) &&
+        decision.deadline > Math.floor(Date.now() / 1000),
+      // Well-formed backing: a LONG swaps the base asset; a SHORT needs an
+      // existing position to sell.
+      valid: decision.direction === 'LONG' || this.positions.has(decision.token),
+      worth_it:
+        avgConfidence >= this.config.minConfidence &&
+        signal.compositeScore >= this.config.minSignalScore,
+    };
+  }
+
+  /**
+   * Parity evidence: the decision's size must re-derive from the same
+   * sizing basis the portfolio state implies (state assertion serving in
+   * place of a golden set — see foundation.ts).
+   */
+  private parityEvidence(decision: TradeDecision): ParityEvidence {
+    const sizingBase = this.riskManager.getDailyStartValue();
+    const expected = Math.min(
+      sizingBase * this.config.maxPositionPct,
+      sizingBase * 0.05,
+    );
+    const actual = parseFloat(decision.amountIn);
+    // decision.amountIn is toFixed(4)-rounded, so allow 0.001 BNB drift.
+    const tolerance = 0.001;
+    const comparable = Number.isFinite(actual);
+    return {
+      caseId: 'portfolio-sizing-assertion',
+      metric: 'trade_size_bnb',
+      unit: 'bnb',
+      expected,
+      tolerance,
+      actual: comparable ? actual : null,
+      withinTolerance: comparable ? Math.abs(actual - expected) <= tolerance : null,
+    };
+  }
+
+  /**
+   * Foundation pass + human lock, then execution. The spend gate, TWAK
+   * policy, and risk assessment have all passed by this point — they are
+   * the guardrail stack the adversary scores.
+   */
+  private async hardenAndExecute(
+    signal: AggregatedSignal,
+    decision: TradeDecision,
+    portfolio: PortfolioState,
+    riskAssessment: RiskAssessment,
+    twakAllowed: boolean,
+    r0: R0Evaluation,
+  ): Promise<TradeResult> {
+    const amountInBnb = parseFloat(decision.amountIn);
+    const hardened = this.chpHardening.harden({
+      token: decision.token,
+      direction: decision.direction,
+      amountInBnb,
+      reasoning: decision.reasoning,
+      sizingBasisBnb: this.riskManager.getDailyStartValue(),
+      r0,
+      guardrailsPassed: twakAllowed && riskAssessment.approved,
+      guardrailDetail: `TWAK policy ${twakAllowed ? 'allowed' : 'blocked'}; risk assessment ${riskAssessment.approved ? 'approved' : 'refused'}; spend gate passed`,
+      boundedResult:
+        Number.isFinite(amountInBnb) &&
+        amountInBnb > 0 &&
+        amountInBnb <= portfolio.availableBNB + 1e-9,
+      boundedDetail: `${amountInBnb} BNB vs available ${portfolio.availableBNB} BNB`,
+      parity: this.parityEvidence(decision),
+    });
+
+    const { kase, assessment, r0Verdict, foundationVerdict } = hardened;
+
+    // REQUIRE_HUMAN_LOCK (default ON): the trade parks as PROVISIONAL_LOCK
+    // and only executes after a named confirmer locks it. A REFRAME trade
+    // (foundation below the defi floor) takes the same path — it may only
+    // proceed through the same human lock, never self-certify.
+    if (this.chpHardening.requireHumanLock) {
+      this.pendingTrades.set(kase.decisionId, {
+        kase,
+        decision,
+        assessment,
+        r0Verdict,
+        foundationVerdict,
+        amountInBnb,
+      });
+      logRiskWarning(
+        `CHP human lock: ${decision.direction} ${decision.token} parked as PROVISIONAL_LOCK` +
+          ` [decision ${kase.decisionId}, foundation ${assessment.score}/${this.chpHardening.domainFloor}]` +
+          ' — confirm with confirmChpDecision to execute',
+      );
+      return this.noopResult(signal.token);
+    }
+
+    // Lock flag off: a REFRAME trade still cannot self-certify — refused
+    // outright, mirroring the reference promotion gate.
+    if (foundationVerdict !== 'PASS') {
+      throw new ChpRejection(
+        `CHP foundation: ${foundationVerdict} (score ${assessment.score}, ${assessment.domain} domain,` +
+          ` floor ${this.chpHardening.domainFloor}) — the trade cannot self-certify; retry with a named confirmer`,
+      );
+    }
+
+    // Foundation PASS with the lock flag off proceeds unlocked (status stays
+    // PROVISIONAL_LOCK, confirmed_by null) and is recorded with its artifacts.
+    const result = await this.executeTrade(decision);
+    this.chpHardening.record({
+      kase,
+      assessment,
+      r0Verdict,
+      foundationVerdict,
+      token: decision.token,
+      direction: decision.direction,
+      amountInBnb,
+      reasoning: decision.reasoning,
+      artifacts: { txHash: result.txHash, success: result.success, mode: 'auto' },
+      confirmedBy: null,
+    });
+    return result;
+  }
+
+  /**
+   * Third-party confirmation of a parked trade: PROVISIONAL_LOCK -> LOCKED,
+   * then the trade executes and the sealed record lands in the ledger.
+   * Returns null when no pending trade matches the decision id.
+   */
+  async confirmTradeDecision(decisionId: string, confirmedBy: string): Promise<TradeResult | null> {
+    const pending = this.pendingTrades.get(decisionId);
+    if (!pending) return null;
+    this.pendingTrades.delete(decisionId);
+
+    const status = this.chpHardening.confirm(pending.kase, confirmedBy);
+    const result = await this.executeTrade(pending.decision);
+    this.chpHardening.record({
+      kase: pending.kase,
+      assessment: pending.assessment,
+      r0Verdict: pending.r0Verdict,
+      foundationVerdict: pending.foundationVerdict,
+      token: pending.decision.token,
+      direction: pending.decision.direction,
+      amountInBnb: pending.amountInBnb,
+      reasoning: pending.decision.reasoning,
+      artifacts: {
+        txHash: result.txHash,
+        success: result.success,
+        confirmedVia: 'confirmTradeDecision',
+      },
+      confirmedBy,
+    });
+    getLogger().info(
+      `[CHP] ${status} ${pending.decision.token} confirmed by ${confirmedBy} [decision ${decisionId}]`,
+    );
+    return result;
+  }
+
+  /** Parked trades awaiting a named confirmer. */
+  getPendingChpDecisions(): {
+    decisionId: string;
+    title: string;
+    status: string;
+    foundationScore: number;
+  }[] {
+    return Array.from(this.pendingTrades.values()).map((pending) => ({
+      decisionId: pending.kase.decisionId,
+      title: pending.kase.title,
+      status: pending.kase.status,
+      foundationScore: pending.kase.foundationScore,
+    }));
+  }
+
+  /** Revalidated decision ledger entries, newest first. */
+  getChpDecisions(limit?: number): RevalidatedLedgerEntry[] {
+    return this.chpHardening.records.list(limit ?? 100);
+  }
+
+  getChpDecision(decisionId: string): RevalidatedLedgerEntry | null {
+    return this.chpHardening.records.get(decisionId);
   }
 
   // ─── Trade Decision Creation ───────────────────────────────

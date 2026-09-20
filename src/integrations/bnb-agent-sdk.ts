@@ -5,6 +5,7 @@
 
 import type { AgentConfig, Signal, AggregatedSignal } from '../utils/types';
 import { getLogger } from '../utils/logger';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 
 // ─── Agent SDK Types ─────────────────────────────────────────
 
@@ -290,7 +291,6 @@ export class BNBAgentSDK {
 
   private persistMemoryToDisk(): void {
     try {
-      const { writeFileSync } = require('fs');
       writeFileSync(
         './agent-memory.json',
         JSON.stringify({
@@ -305,7 +305,6 @@ export class BNBAgentSDK {
 
   private loadMemoryFromDisk(): void {
     try {
-      const { existsSync, readFileSync } = require('fs');
       if (existsSync('./agent-memory.json')) {
         const data = JSON.parse(readFileSync('./agent-memory.json', 'utf-8'));
         if (data.longTerm) {

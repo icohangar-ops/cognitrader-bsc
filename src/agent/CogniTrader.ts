@@ -373,6 +373,31 @@ export class CogniTrader {
     return this.strategyEngine.getPositions();
   }
 
+  // ─── CHP Decision Surface (consensus-hardening-protocol) ──────
+
+  /** Revalidated CHP decision ledger entries, newest first. */
+  getChpDecisions(limit?: number) {
+    return this.strategyEngine.getChpDecisions(limit);
+  }
+
+  /** One revalidated CHP decision record, or null. */
+  getChpDecision(decisionId: string) {
+    return this.strategyEngine.getChpDecision(decisionId);
+  }
+
+  /** Trades parked as PROVISIONAL_LOCK awaiting a named confirmer. */
+  getPendingChpConfirmations() {
+    return this.strategyEngine.getPendingChpDecisions();
+  }
+
+  /**
+   * Confirm a parked trade as a named human: PROVISIONAL_LOCK -> LOCKED,
+   * the trade executes, and the sealed record lands in the ledger.
+   */
+  confirmChpDecision(decisionId: string, confirmedBy: string) {
+    return this.strategyEngine.confirmTradeDecision(decisionId, confirmedBy);
+  }
+
   isLive(): boolean {
     return !this.config.agent.dryRun;
   }
