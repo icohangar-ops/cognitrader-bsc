@@ -1,11 +1,15 @@
-// Vendored from cubiczan-resilience (typescript/src/safeFetch.ts).
-// Import extensions stripped to match this repo's CommonJS/node moduleResolution.
-//
-// Provided for any future outbound `fetch`-based call. The CogniTrader audit
-// sites (ethers BSC RPC, axios CMC client) do not use the global `fetch`, so
-// they are wrapped via the `ioRetry` adapter instead; this primitive is kept
-// for parity with the shared library and for new fetch call-sites.
-
+/**
+ * VENDORED COPY — keep in sync with the canonical package.
+ *
+ * Vendored from @cubiczan/resilience (icohangar-ops/cubiczan-resilience,
+ * typescript/src) at typescript-v0.2.0
+ * (commit 37ce1571f5beb751d153ecdc3b1457cd9c871e37).
+ * Check the canonical package for updates before modifying locally; this
+ * copy's scope and intentional local deltas are recorded in VENDOR_COMMIT.txt
+ * beside this file.
+ *
+ * Local adaptation: Import extensions stripped to match this repo's CommonJS/node moduleResolution.
+ */
 import { ResilienceError } from "./errors";
 import { retry } from "./retry";
 
