@@ -24,8 +24,6 @@ import type { SignalDirection } from '../utils/types';
 export const RECEIPT_KIND = 'chp.tool_approval_receipt';
 export const RECEIPT_SCHEMA_VERSION = '1';
 
-/** Dev-only fallback; override with $CHP_RECEIPT_KEY in production. */
-export const DEFAULT_RECEIPT_KEY = 'cognitrader-bsc-insecure-default-key';
 export const RECEIPT_KEY_ENV = 'CHP_RECEIPT_KEY';
 
 export type ReceiptDecision = 'allow' | 'deny';
@@ -71,8 +69,20 @@ export interface TradeApprovalReceipt extends TradeApprovalReceiptBody {
   signature: string;
 }
 
+/**
+ * Resolve the receipt signing key. Fail-closed: there is no committed
+ * default — an unset or blank $CHP_RECEIPT_KEY throws (at construction
+ * when wired through the engine), so a live deployment can never sign
+ * or verify with a key that is public in source.
+ */
 export function resolveReceiptKey(explicit?: string): string {
-  return explicit || process.env[RECEIPT_KEY_ENV] || DEFAULT_RECEIPT_KEY;
+  const key = explicit ?? process.env[RECEIPT_KEY_ENV] ?? '';
+  if (key.trim() === '') {
+    throw new Error(
+      `${RECEIPT_KEY_ENV} is required — execution receipts refuse to sign or verify with a default key`,
+    );
+  }
+  return key;
 }
 
 /** SHA-256 over the canonical JSON of the trade arguments. */

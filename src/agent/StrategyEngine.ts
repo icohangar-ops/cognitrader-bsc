@@ -17,6 +17,7 @@ import { TrustWalletAgentKit } from '../integrations/twak';
 import { RiskManager } from './RiskManager';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
 import { getLogger, logTrade, logRiskWarning } from '../utils/logger';
+import path from 'path';
 import { ChpGate, type ChpAction } from '../chp/gate';
 import {
   ChpTradeGate,
@@ -37,7 +38,7 @@ import {
   type TradeApprovalReceipt,
   type TradeReceiptArgs,
 } from '../chp/receipt';
-import { InMemoryReplayStore } from '../chp/replay';
+import { FileReplayStore } from '../chp/replay';
 
 /** Receipt TTL — matches the 300s swap deadline in createTradeDecision. */
 const RECEIPT_TTL_MS = 5 * 60 * 1000;
@@ -63,9 +64,9 @@ export class StrategyEngine {
   private chpHardening: ChpTradeGate;
   /** Trades parked as PROVISIONAL_LOCK awaiting a named confirmer. */
   private pendingTrades: Map<string, PendingTrade>;
-  /** Row 22: single-use nonces for issued execution receipts. */
-  private readonly receiptReplay = new InMemoryReplayStore();
-  /** HMAC key for execution receipts ($CHP_RECEIPT_KEY; dev fallback logged). */
+  /** Row 22: single-use nonces for issued execution receipts (JSONL-persisted — survives restarts). */
+  private readonly receiptReplay: FileReplayStore;
+  /** HMAC key for execution receipts ($CHP_RECEIPT_KEY, required — the constructor throws without it). */
   private readonly receiptKey = resolveReceiptKey();
 
   constructor(
@@ -90,6 +91,11 @@ export class StrategyEngine {
     // R0 -> deterministic adversary foundation -> human lock -> ledger.
     this.chpHardening = chpHardening ?? new ChpTradeGate();
     this.pendingTrades = new Map();
+    // Consumed receipt nonces persist to disk so a restart cannot replay a
+    // pre-restart receipt within its TTL (review finding).
+    this.receiptReplay = new FileReplayStore(
+      process.env.CHP_REPLAY_LOG ?? path.join('state', 'replay-nonces.jsonl'),
+    );
   }
 
   // ─── Main Execution Loop ──────────────────────────────────

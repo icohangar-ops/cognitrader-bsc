@@ -14,7 +14,9 @@ import {
   issueTradeReceipt,
   hashTradeArgs,
   parseTradeReceipt,
+  resolveReceiptKey,
   verifyExecutionReceipt,
+  RECEIPT_KEY_ENV,
   type TradeApprovalReceipt,
   type TradeReceiptArgs,
 } from '../src/chp/receipt';
@@ -157,4 +159,39 @@ test('a policy-version mismatch is refused', () => {
   );
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.reason, /policy_version/);
+});
+
+// ── resolveReceiptKey: no committed default (review finding) ──
+
+test('resolveReceiptKey throws when no explicit key and no env var are set', () => {
+  const previous = process.env[RECEIPT_KEY_ENV];
+  delete process.env[RECEIPT_KEY_ENV];
+  try {
+    assert.throws(() => resolveReceiptKey(), /CHP_RECEIPT_KEY is required/);
+  } finally {
+    if (previous !== undefined) process.env[RECEIPT_KEY_ENV] = previous;
+  }
+});
+
+test('resolveReceiptKey throws on a blank env var (fail-closed, not fallback)', () => {
+  const previous = process.env[RECEIPT_KEY_ENV];
+  process.env[RECEIPT_KEY_ENV] = '   ';
+  try {
+    assert.throws(() => resolveReceiptKey(), /CHP_RECEIPT_KEY is required/);
+  } finally {
+    if (previous !== undefined) process.env[RECEIPT_KEY_ENV] = previous;
+    else delete process.env[RECEIPT_KEY_ENV];
+  }
+});
+
+test('resolveReceiptKey prefers the explicit key, then the env var', () => {
+  const previous = process.env[RECEIPT_KEY_ENV];
+  process.env[RECEIPT_KEY_ENV] = 'env-key';
+  try {
+    assert.equal(resolveReceiptKey('explicit-key'), 'explicit-key');
+    assert.equal(resolveReceiptKey(), 'env-key');
+  } finally {
+    if (previous !== undefined) process.env[RECEIPT_KEY_ENV] = previous;
+    else delete process.env[RECEIPT_KEY_ENV];
+  }
 });
