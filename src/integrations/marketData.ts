@@ -24,6 +24,7 @@ import { getLogger } from '../utils/logger';
 import {
   resolveTiered,
   type CachedValue,
+  type SourceTier,
   type TieredResult,
 } from '../lib/resilience/tieredSource';
 
@@ -136,6 +137,18 @@ export function syntheticSnapshot(_tokens: string[]): MarketSnapshot {
 
 /** Where a resolved value came from — re-exported for callers' logging. */
 export type { TieredResult };
+
+/**
+ * Trading gate on data provenance (review finding): mock candles are
+ * deterministic placeholders seeded from the token symbol, not from time —
+ * during a CMC outage the same indicator readings repeat every cycle, so the
+ * agent would place repeated directional bets on fixed synthetic prices.
+ * Capital never moves on the mock tier. A `cache` hit is real (if stale)
+ * data and still trades, with its badge logged.
+ */
+export function tradingBlockedForTier(tier: SourceTier): boolean {
+  return tier === 'mock';
+}
 
 /**
  * Three-tier wrapper around {@link CoinMarketCapClient}.

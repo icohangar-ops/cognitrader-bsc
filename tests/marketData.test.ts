@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { TieredMarketData, syntheticCandles, syntheticSnapshot } from '../src/integrations/marketData';
+import { TieredMarketData, syntheticCandles, syntheticSnapshot, tradingBlockedForTier } from '../src/integrations/marketData';
 import { CoinMarketCapClient } from '../src/integrations/cmc';
 import type { MarketSnapshot, OHLCVSeries } from '../src/utils/types';
 
@@ -108,4 +108,12 @@ test('mock candles are deterministic for the same token', () => {
   const b = syntheticCandles('CAKE', 24);
   assert.deepEqual(a, b);
   assert.notDeepEqual(a, syntheticCandles('ETH', 24));
+});
+
+// ── trading gate on provenance (review finding: no trades on mock data) ──
+
+test('trading is blocked on the mock tier and allowed on live/cache', () => {
+  assert.equal(tradingBlockedForTier('mock'), true);
+  assert.equal(tradingBlockedForTier('cache'), false);
+  assert.equal(tradingBlockedForTier('live'), false);
 });

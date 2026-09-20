@@ -20,7 +20,11 @@ import { SentimentStrategy } from '../strategies/SentimentStrategy';
 import { MeanReversionStrategy } from '../strategies/MeanReversion';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
 import { TieredMarketData } from '../integrations/marketData';
+import type { SourceTier } from '../lib/resilience/tieredSource';
 import { getLogger, logSignal } from '../utils/logger';
+
+/** live=0 < cache=1 < mock=2 — the worst tier is the max severity seen. */
+const TIER_SEVERITY: Record<SourceTier, number> = { live: 0, cache: 1, mock: 2 };
 
 export class SignalEngine {
   private momentumStrategy: MomentumStrategy;
@@ -29,6 +33,14 @@ export class SignalEngine {
   private agentSDK: BNBAgentSDK;
   private config: AgentConfig;
   private marketData: TieredMarketData;
+  /**
+   * Worst OHLCV tier seen during the most recent generateSignals pass
+   * (null before the first). Trading decisions check this alongside the
+   * snapshot tier so mock candles can never drive execution — see
+   * `tradingBlockedForTier` in src/integrations/marketData.ts. The
+   * generateSignals loop is sequential, so per-cycle state is safe.
+   */
+  private worstOhlcvTier: SourceTier | null = null;
 
   constructor(config: AgentConfig, agentSDK: BNBAgentSDK, marketData: TieredMarketData) {
     this.config = config;
@@ -46,6 +58,10 @@ export class SignalEngine {
     snapshot: MarketSnapshot,
   ): Promise<AggregatedSignal[]> {
     getLogger().info(`🔬 Signal Engine: Analyzing ${tokens.length} tokens with ${this.config.strategies.length} strategies`);
+
+    // Fresh per-cycle provenance: this pass's worst OHLCV tier feeds the
+    // mock-tier trading gate in CogniTrader.runCycle.
+    this.worstOhlcvTier = null;
 
     const aggregatedSignals: AggregatedSignal[] = [];
 
@@ -175,6 +191,19 @@ export class SignalEngine {
   async getOHLCVData(token: string): Promise<Candle[]> {
     const result = await this.marketData.getOHLCV(token, '1h', 168);
     getLogger().info(`📊 OHLCV ${token}: [${result.badge}] ${result.value.candles.length} candles (${result.value.interval})`);
+    if (this.worstOhlcvTier === null || TIER_SEVERITY[result.tier] > TIER_SEVERITY[this.worstOhlcvTier]) {
+      this.worstOhlcvTier = result.tier;
+    }
     return result.value.candles;
+  }
+
+  /**
+   * Worst OHLCV tier of the most recent generateSignals pass — the mock-tier
+   * trading gate reads this alongside the snapshot tier (null before the
+   * first pass). Null is treated as "not yet blocked" by the gate: signals
+   * cannot exist without at least one OHLCV fetch.
+   */
+  get lastWorstOhlcvTier(): SourceTier | null {
+    return this.worstOhlcvTier;
   }
 }
