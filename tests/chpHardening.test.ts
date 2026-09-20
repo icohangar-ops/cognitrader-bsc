@@ -381,6 +381,12 @@ function makeEngine(options: {
     ledgerPath: options.ledgerPath,
     domain: 'defi',
   });
+  // Execution receipts are fail-closed: the engine refuses to construct
+  // without a signing key, so the harness supplies a test key. The replay
+  // log points at a per-engine tmp dir so tests never write the repo's
+  // state/ directory.
+  process.env.CHP_RECEIPT_KEY ??= 'chp-hardening-test-key';
+  process.env.CHP_REPLAY_LOG = path.join(tmpDir(), 'replay-nonces.jsonl');
   const engine = new StrategyEngine(config, bsc, twak, risk, agentSDK, spendGate, gate);
   return { engine, gate };
 }

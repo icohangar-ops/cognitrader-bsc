@@ -17,3 +17,5 @@ export { safeFetch } from "./safeFetch";
 export type { SafeFetchOptions, AllowlistHook } from "./safeFetch";
 export { ioRetry, fixedBackoffMs } from "./ioRetry";
 export type { IoRetryOptions } from "./ioRetry";
+export { resolveTiered, AllTiersFailedError } from "./tieredSource";
+export type { SourceTier, TieredResult, TierFailure, CachedValue, TieredSourceOptions } from "./tieredSource";

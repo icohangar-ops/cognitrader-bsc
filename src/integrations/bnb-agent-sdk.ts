@@ -170,27 +170,47 @@ export class BNBAgentSDK {
     const longCount = signals.filter(s => s.direction === 'LONG').length;
     const shortCount = signals.filter(s => s.direction === 'SHORT').length;
 
-    let consensusDirection: AggregatedSignal['consensusDirection'] = 'HOLD';
-    if (longCount > shortCount && longCount >= signals.length * 0.5) {
-      consensusDirection = 'LONG';
-    } else if (shortCount > longCount && shortCount >= signals.length * 0.5) {
-      consensusDirection = 'SHORT';
-    }
+    const consensusDirection: AggregatedSignal['consensusDirection'] =
+      longCount > shortCount && longCount >= signals.length * 0.5 ? 'LONG'
+      : shortCount > longCount && shortCount >= signals.length * 0.5 ? 'SHORT'
+      : 'HOLD';
+
+    // ── Adversarial split damping (row 1, ported from swarmfi-preps) ──
+    // If directional voters are near-evenly split, the signal is noise:
+    // scale the composite down instead of trading a near-tie at full size.
+    //
+    // Deliberate product posture at this portfolio's scale (review finding):
+    // with exactly 3 strategy sources, ANY 2-vs-1 directional split takes
+    // ×0.7 — a raw composite of 77 damps to 54 and the 65-point quality gate
+    // rejects it, so a 2-vs-1 split only survives with a raw score ≥ 93. The
+    // effective rule is near-unanimous agreement before a directional trade,
+    // which is intended for a live-capital agent. Loosen deliberately if the
+    // voter count grows; the damping constants were not re-derived locally.
+    const directionalCount = longCount + shortCount;
+    const balanceRatio = directionalCount > 0
+      ? Math.abs(longCount - shortCount) / directionalCount
+      : 0;
+    const splitDamping =
+      balanceRatio < 0.2 && directionalCount >= 4 ? 0.5
+      : balanceRatio < 0.35 && directionalCount >= 3 ? 0.7
+      : 1;
+    const dampedScore = compositeScore * splitDamping;
 
     const consensusStrength: AggregatedSignal['consensusStrength'] =
-      compositeScore >= 80 ? 'STRONG' : compositeScore >= 65 ? 'MODERATE' : 'WEAK';
+      dampedScore >= 80 ? 'STRONG' : dampedScore >= 65 ? 'MODERATE' : 'WEAK';
 
     const aggregated: AggregatedSignal = {
       token,
       signals,
-      compositeScore: Math.round(compositeScore * 100) / 100,
+      compositeScore: Math.round(dampedScore * 100) / 100,
+      splitDamping,
       consensusDirection,
       consensusStrength,
       riskScore: this.computeRiskScore(signals),
       timestamp: Date.now(),
     };
 
-    getLogger().info(`🧠 Agent orchestration: ${token} → ${consensusDirection} (score: ${compositeScore.toFixed(1)}, strength: ${consensusStrength})`);
+    getLogger().info(`🧠 Agent orchestration: ${token} → ${consensusDirection} (score: ${dampedScore.toFixed(1)}, damping: ×${splitDamping}, strength: ${consensusStrength})`);
 
     return aggregated;
   }

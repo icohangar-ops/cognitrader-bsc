@@ -38,7 +38,9 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 ## Features
 
 - **3 Independent Strategy Engines** — Momentum (RSI + MACD + Volume), Sentiment (CMC Fear&Greed divergence), Mean Reversion (z-score + Bollinger Bands)
-- **Weighted Signal Aggregation** — `orchestrateSignal` in `src/integrations/bnb-agent-sdk.ts` computes the weighted composite (40/35/25 hardcoded) with consensus logic
+- **Weighted Signal Aggregation** — `orchestrateSignal` in `src/integrations/bnb-agent-sdk.ts` computes the weighted composite (40/35/25 hardcoded) with consensus logic, and **adversarial split damping** (`splitDamping`) scales near-tie directional splits down instead of trading them at full size. With 3 strategy sources, any 2-vs-1 split takes ×0.7 — only a raw composite ≥ 93 survives the 65-point gate — so the effective posture is **near-unanimous agreement before a directional trade**, deliberate for a live-capital agent
+- **Tiered Market Data** — `TieredMarketData` in `src/integrations/marketData.ts` resolves every payload live CMC → disk cache → deterministic mock, always badged (`[live]` / `[cache]` / `[mock]` in the logs) via the vendored `resolveTiered` (`src/lib/resilience/tieredSource.ts`); **trading is blocked on the mock tier** (`tradingBlockedForTier` — mock candles repeat identical readings during a CMC outage, so capital never moves on placeholder prices; exits still run on real chain prices)
+- **Signed Execution Receipts** — the CHP verdict *selects* a trade; `issueTradeReceipt`/`verifyExecutionReceipt` in `src/chp/receipt.ts` *authorizes* it: a single-use HMAC-signed receipt (actor + tool + resource + args-hash + policy version + expiry + nonce), replay-guarded by `src/chp/replay.ts` with consumed nonces persisted across restarts — no receipt, no execution
 - **Non-Custodial Execution** — in-repo TWAK wrapper (`src/integrations/twak.ts`) + Ethers.js v6 for PancakeSwap swaps on BSC
 - **Strict Risk Guardrails** — Max 10% position size, 5% stop-loss, 15% take-profit, 3 concurrent positions, 10% daily drawdown circuit breaker
 - **Agent Memory** — Persistent short-term and long-term trade memory with disk persistence across restarts
@@ -87,7 +89,7 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 ### Data Flow (Per Cycle)
 
 ```
-1. FETCH     CoinMarketCap API → Market Snapshot (quotes + Fear&Greed + trending; candle history is synthetic — see Data Source note)
+1. FETCH     Tiered resolution (`src/integrations/marketData.ts`): live CMC → disk cache → deterministic mock, tier badge logged per cycle (quotes + Fear&Greed + trending + OHLCV)
 2. ANALYZE   Each token → 3 strategies generate independent signals
 3. AGGREGATE BNBAgentSDK (in-repo wrapper) → Weighted composite score + consensus direction
 4. FILTER    Minimum score threshold (65) + WEAK signal rejection
@@ -105,7 +107,7 @@ CogniTrader ships production-ready with Docker support, structured logging (Wins
 
 ### 1. Momentum Strategy (RSI + MACD + Volume)
 
-**Weight: 40%** | Minimum data: 30 candles | **Data source: synthetic** — candles come from `generateSyntheticCandles()` in `src/agent/SignalEngine.ts` (random walk; real CMC historical API is a production TODO), while indicator math (RSI/MACD) is real
+**Weight: 40%** | Minimum data: 30 candles | **Data source: tiered** — candles resolve LIVE (real CMC OHLCV via `getOHLCV` in `src/integrations/cmc.ts`) → disk cache → deterministic mock (`syntheticCandles` in `src/integrations/marketData.ts`, seeded random walk), with the tier badge logged per fetch; indicator math (RSI/MACD) is real
 
 Combines four technical indicators into a 100-point composite score:
 
@@ -137,7 +139,7 @@ A data-driven sentiment strategy using CoinMarketCap's proprietary Fear & Greed 
 
 ### 3. Mean Reversion Strategy (Statistical Z-Score)
 
-**Weight: 25%** | Minimum data: 20 candles | **Data source: synthetic** — same `generateSyntheticCandles()` path as Momentum in `src/agent/SignalEngine.ts`
+**Weight: 25%** | Minimum data: 20 candles | **Data source: tiered** — same `TieredMarketData` path as Momentum (`src/integrations/marketData.ts`)
 
 A statistical approach assuming prices revert to their historical mean:
 
@@ -291,6 +293,23 @@ trade?" has a mechanical answer. Four stages wrap execution:
    digest; every read re-validates both and exposes `envelope_valid` and
    `integrity_valid` — a tampered record reads as `integrity_valid: false`.
 
+**Execution receipts** (`src/chp/receipt.ts`, ported from the canonical
+`cubiczan-chp-mcp` receipt scheme): the gate verdict above **selects** a
+trade — it does not by itself authorize execution. `executeTrade` in
+`src/agent/StrategyEngine.ts` requires a valid, unexpired, unreplayed
+`chp.tool_approval_receipt` — HMAC-SHA256 over the canonical JSON of
+`actor + tool + resource + args_hash + policy_version + risk + expiry +
+nonce` (args hashed via `canonicalJson` so the receipt binds the exact
+trade arguments), with the nonce consumed single-use by `src/chp/replay.ts`.
+Missing, tampered, expired, wrong-policy-version, or replayed receipts all
+fail closed: the trade is refused and logged, nothing executes. Consumed
+nonces persist to a JSONL replay log (`FileReplayStore`, default
+`./state/replay-nonces.jsonl`, gitignored) so a restart cannot replay a
+pre-restart receipt within its TTL. The issued receipt's nonce and actor
+are recorded with the execution artifacts (`receiptNonce` / `receiptActor`)
+in the decision ledger. `CHP_RECEIPT_KEY` is **required** — there is no
+default signing key; the agent refuses to start without one.
+
 **Divergence from the Python reference, documented:** the published
 `@cubiczan/chp` npm package implements Profile B (capital gate) only — its
 Profile A ops (R0, foundation, lock) are unsupported there — so the Profile A
@@ -305,8 +324,11 @@ a golden set.
 `getChpDecisions(limit)` / `getChpDecision(id)` return revalidated ledger
 entries; `getPendingChpConfirmations()` lists parked trades;
 `confirmChpDecision(decisionId, confirmedBy)` locks and executes one.
-Configuration: `CHP_REQUIRE_HUMAN_LOCK` (default on) and `CHP_LEDGER_PATH`
-(default `./state/chp-decisions.jsonl`, gitignored).
+Configuration: `CHP_REQUIRE_HUMAN_LOCK` (default on), `CHP_LEDGER_PATH`
+(default `./state/chp-decisions.jsonl`, gitignored), `CHP_RECEIPT_KEY`
+(HMAC key for execution receipts — required, no default —
+`src/chp/receipt.ts`), and `CHP_REPLAY_LOG` (consumed-nonce replay log,
+default `./state/replay-nonces.jsonl` — `src/chp/replay.ts`).
 
 Run the hardening tests:
 
@@ -489,9 +511,23 @@ cognitrader-bsc/
 │   │   └── MeanReversion.ts               # Z-score + Bollinger Bands reversion
 │   ├── integrations/
 │   │   ├── cmc.ts                         # CoinMarketCap API client
+│   │   ├── marketData.ts                  # Tiered market data: live → cache → mock
 │   │   ├── bsc.ts                         # BSC on-chain interaction (Ethers.js v6)
 │   │   ├── twak.ts                        # Trust Wallet Agent Kit integration
 │   │   └── bnb-agent-sdk.ts              # BNB AI Agent SDK wrapper
+│   ├── chp/
+│   │   ├── canonical.ts                   # Canonical JSON serialization
+│   │   ├── envelope.ts                    # CHP payload envelope (structure-only validation)
+│   │   ├── r0.ts                          # R0 solvability gate (FATAL failures)
+│   │   ├── foundation.ts                  # Deterministic adversary foundation pass
+│   │   ├── hardening.ts                   # ChpTradeGate: harden → lock → record
+│   │   ├── gate.ts                        # Spend-policy gate (EXPLORING → LOCKED)
+│   │   ├── policy.ts                      # RiskPolicy types + YAML loader
+│   │   ├── receipt.ts                     # Signed single-use execution receipts
+│   │   ├── replay.ts                      # Receipt nonce replay store
+│   │   └── ledger.ts                      # Append-only SHA-256 decision ledger
+│   ├── lib/
+│   │   └── resilience/                    # Vendored @cubiczan/resilience subset (see VENDOR_COMMIT.txt)
 │   ├── utils/
 │   │   ├── types.ts                       # Full TypeScript type definitions
 │   │   ├── config.ts                      # Configuration loader + validation

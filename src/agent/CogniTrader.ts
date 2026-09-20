@@ -12,19 +12,21 @@ import type {
   Position,
 } from '../utils/types';
 import { CoinMarketCapClient } from '../integrations/cmc';
+import { TieredMarketData, tradingBlockedForTier } from '../integrations/marketData';
 import { TrustWalletAgentKit } from '../integrations/twak';
 import { BSCClient } from '../integrations/bsc';
 import { BNBAgentSDK } from '../integrations/bnb-agent-sdk';
 import { SignalEngine } from './SignalEngine';
 import { RiskManager } from './RiskManager';
 import { StrategyEngine } from './StrategyEngine';
-import { getLogger, logMetrics } from '../utils/logger';
+import { getLogger, logMetrics, logRiskWarning } from '../utils/logger';
 import { tracePrismLLM } from '../observability/prism';
 
 export class CogniTrader {
   // ─── Services ──────────────────────────────────────────────
   private config: FullConfig;
   private cmc: CoinMarketCapClient;
+  private marketData: TieredMarketData;
   private twak: TrustWalletAgentKit;
   private bsc: BSCClient;
   private agentSDK: BNBAgentSDK;
@@ -81,7 +83,8 @@ export class CogniTrader {
     this.bsc = new BSCClient(config.bsc);
     this.agentSDK = new BNBAgentSDK(config.agent);
     this.riskManager = new RiskManager(config.agent);
-    this.signalEngine = new SignalEngine(config.agent, this.agentSDK);
+    this.marketData = new TieredMarketData(this.cmc);
+    this.signalEngine = new SignalEngine(config.agent, this.agentSDK, this.marketData);
     this.strategyEngine = new StrategyEngine(
       config.agent,
       this.bsc,
@@ -203,7 +206,10 @@ export class CogniTrader {
 
     try {
       // Step 1: Fetch market data
-      const snapshot = await this.cmc.getMarketSnapshot(this.config.agent.tokens);
+      // Tiered resolution (row 3): live CMC → disk cache → mock, always badged.
+      const snapshotResult = await this.marketData.getMarketSnapshot(this.config.agent.tokens);
+      const snapshot = snapshotResult.value;
+      getLogger().info(`📡 Market snapshot: [${snapshotResult.badge}]`);
 
       // Step 2: Generate signals
       const signals = await this.signalEngine.generateSignals(
@@ -225,8 +231,22 @@ export class CogniTrader {
         getLogger().info('📭 No actionable signals this cycle');
       }
 
-      // Step 4: Execute trades
-      if (signals.length > 0) {
+      // Step 4: Execute trades — never on mock-tier data (review finding):
+      // during a CMC outage the mock tier repeats the same placeholder
+      // readings every cycle, so the agent would re-place the same
+      // directional bet until the circuit breakers trip. Position exits in
+      // step 5 still run — they use real chain prices and only reduce risk.
+      const ohlcvTier = this.signalEngine.lastWorstOhlcvTier;
+      const tradingBlocked =
+        tradingBlockedForTier(snapshotResult.tier) ||
+        (ohlcvTier !== null && tradingBlockedForTier(ohlcvTier));
+      if (tradingBlocked) {
+        logRiskWarning(
+          `Trading blocked: market data resolved to the mock tier ` +
+            `(snapshot ${snapshotResult.tier}, worst OHLCV ${ohlcvTier ?? 'none'})` +
+            ' — no trades on placeholder prices this cycle',
+        );
+      } else if (signals.length > 0) {
         const results = await this.strategyEngine.executeSignals(signals);
         tradeCount = results.length;
         tradeSuccessCount = results.filter((result) => result.success).length;

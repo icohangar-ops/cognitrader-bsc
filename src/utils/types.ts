@@ -81,6 +81,8 @@ export interface AggregatedSignal {
   token: string;
   signals: Signal[];
   compositeScore: number;
+  /** Composite multiplier from adversarial split damping (1 = undamped). */
+  splitDamping: number;
   consensusDirection: SignalDirection;
   consensusStrength: SignalStrength;
   riskScore: number; // 0–100 (higher = riskier)
