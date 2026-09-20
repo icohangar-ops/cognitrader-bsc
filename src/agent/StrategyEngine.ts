@@ -28,6 +28,19 @@ import {
   type R0Evaluation,
   type RevalidatedLedgerEntry,
 } from '../chp/hardening';
+import {
+  hashTradeArgs,
+  issueTradeReceipt,
+  resolveReceiptKey,
+  verifyExecutionReceipt,
+  type ReceiptRisk,
+  type TradeApprovalReceipt,
+  type TradeReceiptArgs,
+} from '../chp/receipt';
+import { InMemoryReplayStore } from '../chp/replay';
+
+/** Receipt TTL — matches the 300s swap deadline in createTradeDecision. */
+const RECEIPT_TTL_MS = 5 * 60 * 1000;
 
 /** A fully-gated trade parked as PROVISIONAL_LOCK pending a named confirmer. */
 interface PendingTrade {
@@ -50,6 +63,10 @@ export class StrategyEngine {
   private chpHardening: ChpTradeGate;
   /** Trades parked as PROVISIONAL_LOCK awaiting a named confirmer. */
   private pendingTrades: Map<string, PendingTrade>;
+  /** Row 22: single-use nonces for issued execution receipts. */
+  private readonly receiptReplay = new InMemoryReplayStore();
+  /** HMAC key for execution receipts ($CHP_RECEIPT_KEY; dev fallback logged). */
+  private readonly receiptKey = resolveReceiptKey();
 
   constructor(
     config: AgentConfig,
@@ -343,7 +360,12 @@ export class StrategyEngine {
 
     // Foundation PASS with the lock flag off proceeds unlocked (status stays
     // PROVISIONAL_LOCK, confirmed_by null) and is recorded with its artifacts.
-    const result = await this.executeTrade(decision);
+    const receipt = this.executionReceipt(
+      'chp:auto-foundation-pass',
+      decision,
+      this.receiptRiskFor(foundationVerdict),
+    );
+    const result = await this.executeTrade(decision, receipt);
     this.chpHardening.record({
       kase,
       assessment,
@@ -353,7 +375,13 @@ export class StrategyEngine {
       direction: decision.direction,
       amountInBnb,
       reasoning: decision.reasoning,
-      artifacts: { txHash: result.txHash, success: result.success, mode: 'auto' },
+      artifacts: {
+        txHash: result.txHash,
+        success: result.success,
+        mode: 'auto',
+        receiptNonce: receipt.nonce,
+        receiptActor: receipt.actor,
+      },
       confirmedBy: null,
     });
     return result;
@@ -370,7 +398,12 @@ export class StrategyEngine {
     this.pendingTrades.delete(decisionId);
 
     const status = this.chpHardening.confirm(pending.kase, confirmedBy);
-    const result = await this.executeTrade(pending.decision);
+    const receipt = this.executionReceipt(
+      confirmedBy,
+      pending.decision,
+      this.receiptRiskFor(pending.foundationVerdict),
+    );
+    const result = await this.executeTrade(pending.decision, receipt);
     this.chpHardening.record({
       kase: pending.kase,
       assessment: pending.assessment,
@@ -384,6 +417,8 @@ export class StrategyEngine {
         txHash: result.txHash,
         success: result.success,
         confirmedVia: 'confirmTradeDecision',
+        receiptNonce: receipt.nonce,
+        receiptActor: receipt.actor,
       },
       confirmedBy,
     });
@@ -456,9 +491,75 @@ export class StrategyEngine {
     };
   }
 
+  // ─── Execution Receipts (row 22: an allowlist is not authorization) ───
+
+  /** The exact trade arguments a receipt binds — anything that changes what executes on-chain. */
+  private tradeReceiptArgs(decision: TradeDecision): TradeReceiptArgs {
+    return {
+      token: decision.token,
+      direction: decision.direction,
+      amountIn: decision.amountIn,
+      slippageTolerance: decision.slippageTolerance,
+      deadline: decision.deadline,
+    };
+  }
+
+  /** Map the CHP foundation verdict to the receipt's risk field. */
+  private receiptRiskFor(verdict: ChpVerdict): ReceiptRisk {
+    switch (verdict) {
+      case 'PASS':
+        return 'medium';
+      case 'REFRAME':
+        return 'high';
+      default:
+        return 'critical';
+    }
+  }
+
+  /** Issue a signed, single-use receipt authorizing exactly this trade. */
+  private executionReceipt(actor: string, decision: TradeDecision, risk: ReceiptRisk): TradeApprovalReceipt {
+    return issueTradeReceipt(
+      {
+        actor,
+        resource: `execute_trade:${decision.direction}:${decision.token}`,
+        args_hash: hashTradeArgs(this.tradeReceiptArgs(decision)),
+        policy_version: this.chpGate.getPolicy().version,
+        risk,
+        decision: 'allow',
+        ttlMs: RECEIPT_TTL_MS,
+      },
+      this.receiptKey,
+    );
+  }
+
   // ─── Trade Execution ───────────────────────────────────────
 
-  private async executeTrade(decision: TradeDecision): Promise<TradeResult> {
+  private async executeTrade(decision: TradeDecision, receipt?: TradeApprovalReceipt): Promise<TradeResult> {
+    // Row 22 (an allowlist is not authorization): the CHP verdict SELECTS a
+    // trade; a signed receipt AUTHORIZES this exact execution. Fail closed —
+    // no receipt, tampered args, expired, wrong policy version, or replayed
+    // nonce all refuse to move capital.
+    const verification = verifyExecutionReceipt(
+      receipt,
+      {
+        argsHash: hashTradeArgs(this.tradeReceiptArgs(decision)),
+        policyVersion: this.chpGate.getPolicy().version,
+        key: this.receiptKey,
+      },
+      this.receiptReplay,
+    );
+    if (!verification.ok) {
+      logRiskWarning(
+        `CHP execution receipt refused (${verification.reason})` +
+          ` — trade NOT executed [${decision.direction} ${decision.token}]`,
+      );
+      return this.noopResult(decision.token);
+    }
+    getLogger().info(
+      `[CHP] receipt ${verification.receipt.nonce} verified (actor ${verification.receipt.actor},` +
+        ` risk ${verification.receipt.risk}, policy ${verification.receipt.policy_version})`,
+    );
+
     if (this.config.dryRun) {
       getLogger().info(`[DRY RUN] Would execute trade: ${decision.direction} ${decision.amountIn} BNB → ${decision.token}`);
       const result: TradeResult = {
